@@ -1,6 +1,7 @@
 """DataUpdateCoordinator for the Rusty integration."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import timedelta
 import logging
 from typing import Any
@@ -52,5 +53,13 @@ class RustyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for key in _REQUIRED_STATE_KEYS:
             if key not in state:
                 raise UpdateFailed("malformed state")
+
+        # `device` is consumed by both async_setup_entry (device registration)
+        # and Task 5's entities; guarantee here, for every consumer, that it's
+        # a mapping with a usable (non-empty) id, so callers can safely rely
+        # on `state["device"]["id"]` without re-checking its shape.
+        device = state["device"]
+        if not isinstance(device, Mapping) or not device.get("id"):
+            raise UpdateFailed("malformed state")
 
         return state

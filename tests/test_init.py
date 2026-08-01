@@ -118,7 +118,7 @@ async def test_malformed_payload_during_refresh_marks_update_failed(hass):
 
 
 async def test_unload_entry_cleans_up(hass):
-    """Unloading the entry unloads its platforms and leaves it NOT_LOADED."""
+    """Unloading the entry unloads its platforms, leaves it NOT_LOADED, and releases runtime_data."""
     entry = _make_entry()
     entry.add_to_hass(hass)
 
@@ -139,3 +139,84 @@ async def test_unload_entry_cleans_up(hass):
 
     assert result is True
     assert entry.state is ConfigEntryState.NOT_LOADED
+    # Per-entry state (the coordinator) is released, not just left dangling.
+    assert not hasattr(entry, "runtime_data")
+
+
+async def test_device_missing_id_fails_refresh_and_setup_retry(hass):
+    """A `device` present but without an `id` fails the coordinator update and, at
+    setup time, leaves the entry in SETUP_RETRY rather than crashing with a raw
+    KeyError/TypeError.
+    """
+    entry = _make_entry()
+    entry.add_to_hass(hass)
+
+    malformed_body = {**STATE_BODY, "device": {"name": DEVICE_NAME, "version": "2.3.0"}}
+
+    with (
+        patch(
+            "custom_components.rusty.coordinator.RustyClient.async_state",
+            return_value=malformed_body,
+        ),
+        patch("custom_components.rusty.PLATFORMS", []),
+    ):
+        result = await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert result is False
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+
+
+async def test_device_not_a_mapping_fails_refresh_and_setup_retry(hass):
+    """A `device` value that isn't a mapping (e.g. a string) is handled the same
+    way as a missing id: no raw TypeError, entry lands in SETUP_RETRY.
+    """
+    entry = _make_entry()
+    entry.add_to_hass(hass)
+
+    malformed_body = {**STATE_BODY, "device": "not-a-mapping"}
+
+    with (
+        patch(
+            "custom_components.rusty.coordinator.RustyClient.async_state",
+            return_value=malformed_body,
+        ),
+        patch("custom_components.rusty.PLATFORMS", []),
+    ):
+        result = await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert result is False
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+
+
+async def test_device_missing_id_during_refresh_marks_update_failed(hass):
+    """A `device` without an id arriving on a later refresh (not just at setup)
+    also fails the coordinator update, without crashing.
+    """
+    entry = _make_entry()
+    entry.add_to_hass(hass)
+
+    with (
+        patch(
+            "custom_components.rusty.coordinator.RustyClient.async_state",
+            return_value=STATE_BODY,
+        ),
+        patch("custom_components.rusty.PLATFORMS", []),
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    coordinator = entry.runtime_data
+    assert coordinator.last_update_success is True
+
+    malformed_body = {**STATE_BODY, "device": {"name": DEVICE_NAME}}
+    with patch(
+        "custom_components.rusty.coordinator.RustyClient.async_state",
+        return_value=malformed_body,
+    ):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    assert coordinator.last_update_success is False
+    assert coordinator.data == STATE_BODY

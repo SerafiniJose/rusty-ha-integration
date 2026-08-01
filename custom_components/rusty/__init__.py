@@ -24,12 +24,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: RustyConfigEntry) -> boo
 
     entry.runtime_data = coordinator
 
+    # The coordinator guarantees `device` is a mapping with a non-empty "id"
+    # (see coordinator.py's _async_update_data validation); "name"/"version"
+    # are optional fields we read defensively.
     device = coordinator.data["device"]
     device_registry = dr.async_get(hass)
     device_registry.async_get_or_create(
         config_entry_id=entry.entry_id,
         identifiers={(DOMAIN, device["id"])},
-        name=device["name"],
+        name=device.get("name"),
         manufacturer="Rusty",
         model="Rusty",
         sw_version=device.get("version"),
