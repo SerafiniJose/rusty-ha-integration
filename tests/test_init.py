@@ -38,12 +38,9 @@ async def test_setup_entry_success_creates_device(hass):
     entry = _make_entry()
     entry.add_to_hass(hass)
 
-    with (
-        patch(
-            "custom_components.rusty.coordinator.RustyClient.async_state",
-            return_value=STATE_BODY,
-        ),
-        patch("custom_components.rusty.PLATFORMS", []),
+    with patch(
+        "custom_components.rusty.coordinator.RustyClient.async_state",
+        return_value=STATE_BODY,
     ):
         result = await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -67,12 +64,9 @@ async def test_setup_entry_device_offline_raises_not_ready(hass):
     entry = _make_entry()
     entry.add_to_hass(hass)
 
-    with (
-        patch(
-            "custom_components.rusty.coordinator.RustyClient.async_state",
-            side_effect=RustyConnectionError("cannot connect"),
-        ),
-        patch("custom_components.rusty.PLATFORMS", []),
+    with patch(
+        "custom_components.rusty.coordinator.RustyClient.async_state",
+        side_effect=RustyConnectionError("cannot connect"),
     ):
         result = await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -86,12 +80,9 @@ async def test_malformed_payload_during_refresh_marks_update_failed(hass):
     entry = _make_entry()
     entry.add_to_hass(hass)
 
-    with (
-        patch(
-            "custom_components.rusty.coordinator.RustyClient.async_state",
-            return_value=STATE_BODY,
-        ),
-        patch("custom_components.rusty.PLATFORMS", []),
+    with patch(
+        "custom_components.rusty.coordinator.RustyClient.async_state",
+        return_value=STATE_BODY,
     ):
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -104,11 +95,8 @@ async def test_malformed_payload_during_refresh_marks_update_failed(hass):
         "custom_components.rusty.coordinator.RustyClient.async_state",
         return_value={"unexpected": "shape"},
     ):
-        # Drive a refresh directly: no platforms are loaded in this test (Task
-        # 5 entities are what would normally register as coordinator
-        # listeners and trigger the 5 s polling loop), so we exercise the
-        # coordinator's own public refresh entrypoint instead of relying on
-        # time-interval scheduling.
+        # Drive a refresh directly rather than relying on time-interval
+        # scheduling for the 5 s polling loop.
         await coordinator.async_refresh()
         await hass.async_block_till_done()
 
@@ -122,12 +110,9 @@ async def test_unload_entry_cleans_up(hass):
     entry = _make_entry()
     entry.add_to_hass(hass)
 
-    with (
-        patch(
-            "custom_components.rusty.coordinator.RustyClient.async_state",
-            return_value=STATE_BODY,
-        ),
-        patch("custom_components.rusty.PLATFORMS", []),
+    with patch(
+        "custom_components.rusty.coordinator.RustyClient.async_state",
+        return_value=STATE_BODY,
     ):
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -153,12 +138,9 @@ async def test_device_missing_id_fails_refresh_and_setup_retry(hass):
 
     malformed_body = {**STATE_BODY, "device": {"name": DEVICE_NAME, "version": "2.3.0"}}
 
-    with (
-        patch(
-            "custom_components.rusty.coordinator.RustyClient.async_state",
-            return_value=malformed_body,
-        ),
-        patch("custom_components.rusty.PLATFORMS", []),
+    with patch(
+        "custom_components.rusty.coordinator.RustyClient.async_state",
+        return_value=malformed_body,
     ):
         result = await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -176,12 +158,9 @@ async def test_device_not_a_mapping_fails_refresh_and_setup_retry(hass):
 
     malformed_body = {**STATE_BODY, "device": "not-a-mapping"}
 
-    with (
-        patch(
-            "custom_components.rusty.coordinator.RustyClient.async_state",
-            return_value=malformed_body,
-        ),
-        patch("custom_components.rusty.PLATFORMS", []),
+    with patch(
+        "custom_components.rusty.coordinator.RustyClient.async_state",
+        return_value=malformed_body,
     ):
         result = await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -197,12 +176,9 @@ async def test_device_missing_id_during_refresh_marks_update_failed(hass):
     entry = _make_entry()
     entry.add_to_hass(hass)
 
-    with (
-        patch(
-            "custom_components.rusty.coordinator.RustyClient.async_state",
-            return_value=STATE_BODY,
-        ),
-        patch("custom_components.rusty.PLATFORMS", []),
+    with patch(
+        "custom_components.rusty.coordinator.RustyClient.async_state",
+        return_value=STATE_BODY,
     ):
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
