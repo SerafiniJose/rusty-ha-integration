@@ -15,7 +15,7 @@ from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
-from .api import RustyClient, RustyConnectionError
+from .api import RustyApiError, RustyClient
 from .const import DEFAULT_PORT, DOMAIN
 
 STEP_USER_DATA_SCHEMA = vol.Schema({vol.Required(CONF_HOST): str})
@@ -42,23 +42,30 @@ class RustyConfigFlow(ConfigFlow, domain=DOMAIN):
         """Handle a flow initiated by zeroconf discovery."""
         host = discovery_info.host
         device_id = discovery_info.properties.get("id")
+        had_txt_id = bool(device_id)
 
         # Quick abort (and host update) if the TXT id already matches a
         # configured entry, without needing to reach the device first.
-        if device_id:
+        if had_txt_id:
             await self.async_set_unique_id(device_id)
             self._abort_if_unique_id_configured(updates={CONF_HOST: host})
 
         try:
             state = await self._async_probe(host)
-        except RustyConnectionError:
+        except RustyApiError:
             return self.async_abort(reason="cannot_connect")
 
-        device_id = device_id or state["device"]["id"]
-        device_name = state["device"]["name"]
+        device = state.get("device") or {}
+        device_id = device_id or device.get("id")
+        device_name = device.get("name")
+        if not device_id or not device_name:
+            return self.async_abort(reason="cannot_connect")
 
-        await self.async_set_unique_id(device_id)
-        self._abort_if_unique_id_configured(updates={CONF_HOST: host})
+        # Only re-run the unique-id dance if the id wasn't already known (and
+        # already checked) from the TXT record above.
+        if not had_txt_id:
+            await self.async_set_unique_id(device_id)
+            self._abort_if_unique_id_configured(updates={CONF_HOST: host})
 
         self._discovered_host = host
         self._discovered_name = device_name
@@ -90,17 +97,21 @@ class RustyConfigFlow(ConfigFlow, domain=DOMAIN):
             host = user_input[CONF_HOST]
             try:
                 state = await self._async_probe(host)
-            except RustyConnectionError:
+            except RustyApiError:
                 errors["base"] = "cannot_connect"
             else:
-                device_id = state["device"]["id"]
-                device_name = state["device"]["name"]
-                await self.async_set_unique_id(device_id)
-                self._abort_if_unique_id_configured(updates={CONF_HOST: host})
-                return self.async_create_entry(
-                    title=device_name,
-                    data={CONF_HOST: host, CONF_PORT: DEFAULT_PORT},
-                )
+                device = state.get("device") or {}
+                device_id = device.get("id")
+                device_name = device.get("name")
+                if not device_id or not device_name:
+                    errors["base"] = "cannot_connect"
+                else:
+                    await self.async_set_unique_id(device_id)
+                    self._abort_if_unique_id_configured(updates={CONF_HOST: host})
+                    return self.async_create_entry(
+                        title=device_name,
+                        data={CONF_HOST: host, CONF_PORT: DEFAULT_PORT},
+                    )
 
         return self.async_show_form(
             step_id="user",

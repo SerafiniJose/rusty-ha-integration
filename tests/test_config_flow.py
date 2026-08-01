@@ -11,7 +11,7 @@ from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.rusty.api import RustyConnectionError
+from custom_components.rusty.api import RustyApiError, RustyConnectionError
 from custom_components.rusty.const import DEFAULT_PORT, DOMAIN
 
 HOST = "192.168.7.116"
@@ -28,7 +28,9 @@ STATE_BODY = {
 }
 
 
-def _zeroconf_discovery_info(host: str = HOST) -> ZeroconfServiceInfo:
+def _zeroconf_discovery_info(
+    host: str = HOST, properties: dict | None = None
+) -> ZeroconfServiceInfo:
     return ZeroconfServiceInfo(
         ip_address=ip_address(host),
         ip_addresses=[ip_address(host)],
@@ -36,7 +38,7 @@ def _zeroconf_discovery_info(host: str = HOST) -> ZeroconfServiceInfo:
         hostname="rusty.local.",
         type="_rusty._tcp.local.",
         name="rusty._rusty._tcp.local.",
-        properties={"id": DEVICE_ID, "api": "1"},
+        properties=properties if properties is not None else {"id": DEVICE_ID, "api": "1"},
     )
 
 
@@ -127,6 +129,73 @@ async def test_manual_cannot_connect(hass):
     with patch(
         "custom_components.rusty.config_flow.RustyClient.async_state",
         side_effect=RustyConnectionError("cannot connect"),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input={CONF_HOST: HOST}
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert result["errors"] == {"base": "cannot_connect"}
+
+
+async def test_zeroconf_txt_id_absent_falls_back_to_probe(hass):
+    """When TXT properties carry no `id`, the flow probes /api/state for it."""
+    discovery_info = _zeroconf_discovery_info(properties={"api": "1"})
+
+    with patch(
+        "custom_components.rusty.config_flow.RustyClient.async_state",
+        return_value=STATE_BODY,
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": config_entries.SOURCE_ZEROCONF},
+            data=discovery_info,
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "zeroconf_confirm"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input={}
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["title"] == DEVICE_NAME
+    assert result["data"] == {CONF_HOST: HOST, CONF_PORT: DEFAULT_PORT}
+
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    assert entry.unique_id == DEVICE_ID
+
+
+async def test_manual_malformed_state_shows_cannot_connect(hass):
+    """A response missing the expected device id/name is treated as cannot_connect."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+
+    with patch(
+        "custom_components.rusty.config_flow.RustyClient.async_state",
+        return_value={"unexpected": "shape"},
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input={CONF_HOST: HOST}
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert result["errors"] == {"base": "cannot_connect"}
+    assert hass.config_entries.async_entries(DOMAIN) == []
+
+
+async def test_manual_non_connection_api_error_shows_cannot_connect(hass):
+    """A non-connection RustyApiError (e.g. HTTP 4xx/5xx or bad JSON) also maps to cannot_connect."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+
+    with patch(
+        "custom_components.rusty.config_flow.RustyClient.async_state",
+        side_effect=RustyApiError("HTTP 500"),
     ):
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], user_input={CONF_HOST: HOST}
