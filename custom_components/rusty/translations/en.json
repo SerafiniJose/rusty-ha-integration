@@ -1,0 +1,24 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Rusty",
+        "description": "Enter the IP address or hostname of your Rusty device.",
+        "data": {
+          "host": "Host"
+        }
+      },
+      "zeroconf_confirm": {
+        "title": "Discovered Rusty device",
+        "description": "Do you want to add the Rusty device named `{name}` to Home Assistant?"
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect"
+    },
+    "abort": {
+      "already_configured": "Device is already configured",
+      "cannot_connect": "Failed to connect"
+    }
+  }
+}
