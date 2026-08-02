@@ -15,10 +15,15 @@ Rusty is discovered automatically via zeroconf, or can be added manually with th
 
 ## Entities
 
+Entity IDs are derived from the device's name (as set in the Rusty app) plus the entity. For a
+device named "Rusty", they look like:
+
 - `light.rusty_screen` — the device screen, as a light entity (on/off and brightness)
 - `number.rusty_volume` — device volume, as a 0-100 slider
 - `binary_sensor.rusty_spotify_playing` — on when Spotify is playing on the device
 - `binary_sensor.rusty_dlna_playing` — on when DLNA playback is active on the device
+
+If you rename the device, its entity IDs change accordingly.
 
 The device page also includes a "Visit" link to the device's local web UI. That link only works
 when you're on the same local network as the device (LAN-only, not reachable remotely).
