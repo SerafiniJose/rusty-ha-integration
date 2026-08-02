@@ -232,3 +232,30 @@ async def test_malformed_command_response_does_not_poison_the_coordinator(hass):
     assert coordinator.data == STATE_BODY
     assert coordinator.last_update_success is True
     assert hass.states.get(ENTITY_ID).state == "42"
+
+
+async def test_malformed_command_response_falls_back_to_a_refresh(hass):
+    """Rather than adopting an unusable body, the coordinator asks for a poll."""
+    entry = await _setup(hass)
+
+    with (
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_volume",
+            new_callable=AsyncMock,
+            return_value={"nope": True},
+        ),
+        patch(
+            "custom_components.rusty.coordinator.RustyCoordinator.async_request_refresh",
+            new_callable=AsyncMock,
+        ) as mock_refresh,
+    ):
+        await hass.services.async_call(
+            "number",
+            "set_value",
+            {"entity_id": ENTITY_ID, "value": 70},
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+
+    mock_refresh.assert_awaited_once()
+    assert entry.runtime_data.data == STATE_BODY

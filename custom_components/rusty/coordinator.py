@@ -35,7 +35,7 @@ def _validate_state(state: Any) -> dict[str, Any]:
     the entities, so its `id` must additionally be non-empty; the entities read
     the other sections' leaves directly, so those must simply be present.
     """
-    if not isinstance(state, Mapping):
+    if not isinstance(state, dict):
         raise UpdateFailed("malformed state")
 
     for section, leaf_keys in _REQUIRED_STATE_KEYS.items():
