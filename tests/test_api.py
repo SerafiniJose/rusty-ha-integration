@@ -72,7 +72,12 @@ async def test_async_set_screen_off_omits_brightness(mock_aioresponse):
 
 
 async def test_async_set_volume_409_raises_volume_fixed_error(mock_aioresponse):
-    """A 409 response from /api/volume raises RustyVolumeFixedError."""
+    """A 409 response from /api/volume raises RustyVolumeFixedError.
+
+    The 409 -> "volume is fixed" translation lives in async_set_volume, so this
+    is asserted through the public volume call, not through the generic
+    transport.
+    """
     mock_aioresponse.post(
         f"{BASE_URL}/api/volume",
         payload={"error": "volume is fixed"},
@@ -81,8 +86,98 @@ async def test_async_set_volume_409_raises_volume_fixed_error(mock_aioresponse):
 
     async with aiohttp.ClientSession() as session:
         client = RustyClient(HOST, session)
-        with pytest.raises(RustyVolumeFixedError):
+        with pytest.raises(RustyVolumeFixedError) as excinfo:
             await client.async_set_volume(50)
+
+    # The `{"error": ...}` envelope is unwrapped, not shown raw to the user.
+    assert str(excinfo.value) == "volume is fixed"
+
+
+async def test_screen_409_is_not_a_volume_fixed_error(mock_aioresponse):
+    """A 409 from /api/screen is a plain RustyApiError - never "volume is fixed"."""
+    mock_aioresponse.post(
+        f"{BASE_URL}/api/screen",
+        payload={"error": "screen is busy"},
+        status=409,
+    )
+
+    async with aiohttp.ClientSession() as session:
+        client = RustyClient(HOST, session)
+        with pytest.raises(RustyApiError) as excinfo:
+            await client.async_set_screen(True)
+
+    assert not isinstance(excinfo.value, RustyVolumeFixedError)
+    assert excinfo.value.status == 409
+    assert str(excinfo.value) == "screen is busy"
+
+
+async def test_state_409_is_not_a_volume_fixed_error(mock_aioresponse):
+    """A 409 from the GET /api/state poll is a plain RustyApiError too."""
+    mock_aioresponse.get(f"{BASE_URL}/api/state", body="conflict", status=409)
+
+    async with aiohttp.ClientSession() as session:
+        client = RustyClient(HOST, session)
+        with pytest.raises(RustyApiError) as excinfo:
+            await client.async_state()
+
+    assert not isinstance(excinfo.value, RustyVolumeFixedError)
+    assert excinfo.value.status == 409
+
+
+async def test_error_envelope_is_unwrapped(mock_aioresponse):
+    """An `{"error": "..."}` body surfaces as just its message, not the raw JSON."""
+    mock_aioresponse.get(
+        f"{BASE_URL}/api/state", payload={"error": "screen unavailable"}, status=500
+    )
+
+    async with aiohttp.ClientSession() as session:
+        client = RustyClient(HOST, session)
+        with pytest.raises(RustyApiError) as excinfo:
+            await client.async_state()
+
+    assert str(excinfo.value) == "screen unavailable"
+    assert excinfo.value.status == 500
+
+
+async def test_error_without_envelope_falls_back_to_body_text(mock_aioresponse):
+    """A non-JSON error body is surfaced verbatim."""
+    mock_aioresponse.get(
+        f"{BASE_URL}/api/state", body="Internal Server Error", status=500
+    )
+
+    async with aiohttp.ClientSession() as session:
+        client = RustyClient(HOST, session)
+        with pytest.raises(RustyApiError) as excinfo:
+            await client.async_state()
+
+    assert "Internal Server Error" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("body", ["[]", '"ok"', "null", "3"])
+async def test_valid_json_that_is_not_an_object_raises_api_error(mock_aioresponse, body):
+    """A 200 body that is valid JSON but not an object never reaches callers."""
+    mock_aioresponse.get(f"{BASE_URL}/api/state", body=body, status=200)
+
+    async with aiohttp.ClientSession() as session:
+        client = RustyClient(HOST, session)
+        with pytest.raises(RustyApiError):
+            await client.async_state()
+
+
+async def test_json_body_with_wrong_content_type_still_parses(mock_aioresponse):
+    """The body is decoded by hand, so a text/plain Content-Type is no obstacle."""
+    mock_aioresponse.get(
+        f"{BASE_URL}/api/state",
+        body='{"device": {"id": "abc123"}}',
+        status=200,
+        content_type="text/plain",
+    )
+
+    async with aiohttp.ClientSession() as session:
+        client = RustyClient(HOST, session)
+        result = await client.async_state()
+
+    assert result == {"device": {"id": "abc123"}}
 
 
 async def test_async_state_connect_error_raises_connection_error(mock_aioresponse):
