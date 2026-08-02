@@ -6,7 +6,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .api import RustyVolumeFixedError
+from .api import RustyApiError, RustyVolumeFixedError
 from .coordinator import RustyConfigEntry, RustyCoordinator
 from .entity import RustyEntity
 
@@ -54,5 +54,6 @@ class RustyVolumeNumber(RustyEntity, NumberEntity):
             raise HomeAssistantError(
                 "Rusty's volume is fixed and cannot be changed"
             ) from err
-        self.coordinator.async_set_updated_data(result)
-        await self.coordinator.async_request_refresh()
+        except RustyApiError as err:
+            raise HomeAssistantError(f"Error communicating with Rusty: {err}") from err
+        await self.coordinator.async_apply_command_result(result)

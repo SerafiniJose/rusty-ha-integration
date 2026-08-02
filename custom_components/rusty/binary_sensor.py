@@ -19,7 +19,7 @@ async def async_setup_entry(
     async_add_entities(
         [
             RustyPlayingBinarySensor(coordinator, "spotify", "Spotify playing", "mdi:spotify"),
-            RustyPlayingBinarySensor(coordinator, "dlna", "Dlna playing", "mdi:cast-audio"),
+            RustyPlayingBinarySensor(coordinator, "dlna", "DLNA playing", "mdi:cast-audio"),
         ]
     )
 

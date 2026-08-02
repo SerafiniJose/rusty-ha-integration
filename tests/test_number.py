@@ -9,7 +9,7 @@ from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.rusty.api import RustyVolumeFixedError
+from custom_components.rusty.api import RustyConnectionError, RustyVolumeFixedError
 from custom_components.rusty.const import DEFAULT_PORT, DOMAIN
 
 HOST = "192.168.7.116"
@@ -82,12 +82,12 @@ async def test_set_value_calls_set_volume(hass):
             new_callable=AsyncMock,
             return_value=result_body,
         ) as mock_set_volume,
-        # The post-command async_request_refresh() also polls; keep it
-        # answering so the coordinator's refresh succeeds cleanly.
+        # Guard: a command must not trigger any GET /api/state of its own.
         patch(
             "custom_components.rusty.coordinator.RustyClient.async_state",
+            new_callable=AsyncMock,
             return_value=result_body,
-        ),
+        ) as mock_state,
     ):
         await hass.services.async_call(
             "number",
@@ -98,10 +98,13 @@ async def test_set_value_calls_set_volume(hass):
         await hass.async_block_till_done()
 
     mock_set_volume.assert_awaited_once_with(70)
+    assert mock_state.await_count == 0
 
 
 async def test_set_value_result_applies_as_snapshot_immediately(hass):
-    """The state returned by the command becomes the entity's state immediately."""
+    """The state returned by the command becomes the entity's state immediately,
+    and survives - no follow-up poll overwrites it with the pre-command value.
+    """
     await _setup(hass)
 
     result_body = {**STATE_BODY, "volume": {"value": 55, "fixed": False}}
@@ -111,11 +114,12 @@ async def test_set_value_result_applies_as_snapshot_immediately(hass):
             new_callable=AsyncMock,
             return_value=result_body,
         ),
-        # No-op the post-command refresh so this test isolates the
-        # immediate snapshot-apply from any subsequent poll.
+        # If the command path polled again, it would read the pre-command
+        # value (42) straight back over the snapshot.
         patch(
-            "custom_components.rusty.coordinator.RustyCoordinator.async_request_refresh",
+            "custom_components.rusty.coordinator.RustyClient.async_state",
             new_callable=AsyncMock,
+            return_value=STATE_BODY,
         ),
     ):
         await hass.services.async_call(
@@ -165,10 +169,66 @@ async def test_volume_fixed_error_raises_homeassistant_error(hass):
         new_callable=AsyncMock,
         side_effect=RustyVolumeFixedError("volume is fixed"),
     ):
-        with pytest.raises(HomeAssistantError):
+        with pytest.raises(HomeAssistantError) as excinfo:
             await hass.services.async_call(
                 "number",
                 "set_value",
                 {"entity_id": ENTITY_ID, "value": 70},
                 blocking=True,
             )
+
+    assert "fixed" in str(excinfo.value)
+
+
+async def test_connection_error_during_command_raises_homeassistant_error(hass):
+    """A non-volume-fixed API failure also surfaces as HomeAssistantError, so the
+    UI shows a real message instead of "Unknown error" plus a traceback.
+    """
+    await _setup(hass)
+
+    with patch(
+        "custom_components.rusty.api.RustyClient.async_set_volume",
+        new_callable=AsyncMock,
+        side_effect=RustyConnectionError("cannot connect"),
+    ):
+        with pytest.raises(HomeAssistantError) as excinfo:
+            await hass.services.async_call(
+                "number",
+                "set_value",
+                {"entity_id": ENTITY_ID, "value": 70},
+                blocking=True,
+            )
+
+    assert "cannot connect" in str(excinfo.value)
+
+
+async def test_malformed_command_response_does_not_poison_the_coordinator(hass):
+    """A volume command answering with a partial body leaves the last good data
+    (and last_update_success) alone rather than writing an unparseable payload.
+    """
+    entry = await _setup(hass)
+    coordinator = entry.runtime_data
+
+    with (
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_volume",
+            new_callable=AsyncMock,
+            return_value={"device": {"id": DEVICE_ID}, "volume": {"value": 70}},
+        ),
+        patch(
+            "custom_components.rusty.coordinator.RustyClient.async_state",
+            new_callable=AsyncMock,
+            return_value=STATE_BODY,
+        ),
+    ):
+        await hass.services.async_call(
+            "number",
+            "set_value",
+            {"entity_id": ENTITY_ID, "value": 70},
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+
+    assert coordinator.data == STATE_BODY
+    assert coordinator.last_update_success is True
+    assert hass.states.get(ENTITY_ID).state == "42"

@@ -57,6 +57,21 @@ async def test_entity_ids(hass):
     assert hass.states.get(DLNA_ENTITY_ID) is not None
 
 
+async def test_dlna_display_name_is_uppercase_but_entity_id_is_unchanged(hass):
+    """"DLNA playing" is the display name; the entity_id must still slugify to
+    ..._dlna_playing (renaming it would orphan existing automations).
+    """
+    await _setup(hass)
+
+    state = hass.states.get(DLNA_ENTITY_ID)
+    assert state is not None
+    assert state.entity_id == "binary_sensor.rusty_dlna_playing"
+    assert state.attributes["friendly_name"] == "Rusty DLNA playing"
+    assert hass.states.get(SPOTIFY_ENTITY_ID).attributes["friendly_name"] == (
+        "Rusty Spotify playing"
+    )
+
+
 async def test_initial_state_from_playing(hass):
     """Initial on/off state reflects playing.spotify / playing.dlna."""
     await _setup(hass)

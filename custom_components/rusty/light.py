@@ -7,8 +7,10 @@ from typing import Any
 
 from homeassistant.components.light import ATTR_BRIGHTNESS, ColorMode, LightEntity
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .api import RustyApiError
 from .coordinator import RustyConfigEntry, RustyCoordinator
 from .entity import RustyEntity
 
@@ -58,12 +60,18 @@ class RustyScreenLight(RustyEntity, LightEntity):
         device_brightness = (
             _ha_brightness_to_device(ha_brightness) if ha_brightness else None
         )
-        result = await self.coordinator.client.async_set_screen(True, device_brightness)
-        self.coordinator.async_set_updated_data(result)
-        await self.coordinator.async_request_refresh()
+        try:
+            result = await self.coordinator.client.async_set_screen(
+                True, device_brightness
+            )
+        except RustyApiError as err:
+            raise HomeAssistantError(f"Error communicating with Rusty: {err}") from err
+        await self.coordinator.async_apply_command_result(result)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the screen off."""
-        result = await self.coordinator.client.async_set_screen(False)
-        self.coordinator.async_set_updated_data(result)
-        await self.coordinator.async_request_refresh()
+        try:
+            result = await self.coordinator.client.async_set_screen(False)
+        except RustyApiError as err:
+            raise HomeAssistantError(f"Error communicating with Rusty: {err}") from err
+        await self.coordinator.async_apply_command_result(result)

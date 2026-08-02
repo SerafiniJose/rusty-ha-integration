@@ -3,10 +3,13 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_HOST, CONF_PORT, STATE_OFF, STATE_ON
+from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.rusty.api import RustyConnectionError
 from custom_components.rusty.const import DEFAULT_PORT, DOMAIN
 
 HOST = "192.168.7.116"
@@ -103,12 +106,12 @@ async def test_turn_on_without_brightness_calls_set_screen_true_none(hass):
             new_callable=AsyncMock,
             return_value=result_body,
         ) as mock_set_screen,
-        # The post-command async_request_refresh() also polls; keep it
-        # answering so the coordinator's refresh succeeds cleanly.
+        # Guard: a command must not trigger any GET /api/state of its own.
         patch(
             "custom_components.rusty.coordinator.RustyClient.async_state",
+            new_callable=AsyncMock,
             return_value=result_body,
-        ),
+        ) as mock_state,
     ):
         await hass.services.async_call(
             "light", "turn_on", {"entity_id": ENTITY_ID}, blocking=True
@@ -117,6 +120,7 @@ async def test_turn_on_without_brightness_calls_set_screen_true_none(hass):
 
     mock_set_screen.assert_awaited_once_with(True, None)
     assert entry.runtime_data.data == result_body
+    assert mock_state.await_count == 0
 
 
 async def test_turn_on_with_brightness_converts_and_clamps(hass):
@@ -225,7 +229,8 @@ async def test_turn_off_calls_set_screen_false(hass):
 
 async def test_command_result_applies_as_snapshot_immediately(hass):
     """The state returned by the command becomes the entity's state immediately,
-    without waiting for the next poll.
+    it survives (no follow-up poll overwrites it), and it costs exactly one
+    HTTP request.
     """
     await _setup(hass)
 
@@ -237,13 +242,14 @@ async def test_command_result_applies_as_snapshot_immediately(hass):
             "custom_components.rusty.api.RustyClient.async_set_screen",
             new_callable=AsyncMock,
             return_value=result_body,
-        ),
-        # No-op the post-command refresh so this test isolates the
-        # immediate snapshot-apply from any subsequent poll.
+        ) as mock_set_screen,
+        # If the command path polled again, it would read this pre-command
+        # brightness (80 -> HA 204) straight back over the snapshot.
         patch(
-            "custom_components.rusty.coordinator.RustyCoordinator.async_request_refresh",
+            "custom_components.rusty.coordinator.RustyClient.async_state",
             new_callable=AsyncMock,
-        ),
+            return_value=STATE_BODY,
+        ) as mock_state,
     ):
         await hass.services.async_call(
             "light",
@@ -256,6 +262,85 @@ async def test_command_result_applies_as_snapshot_immediately(hass):
     state = hass.states.get(ENTITY_ID)
     # round(33 * 255 / 100) = 84
     assert state.attributes["brightness"] == 84
+    # Exactly one HTTP request for the command: the POST, and nothing else.
+    assert mock_set_screen.await_count == 1
+    assert mock_state.await_count == 0
+
+
+async def test_turn_off_command_result_survives_and_costs_one_request(hass):
+    """Same guarantee on the turn_off path: snapshot kept, one request."""
+    await _setup(hass)
+
+    result_body = {**STATE_BODY, "screen": {**STATE_BODY["screen"], "on": False}}
+    with (
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_screen",
+            new_callable=AsyncMock,
+            return_value=result_body,
+        ) as mock_set_screen,
+        patch(
+            "custom_components.rusty.coordinator.RustyClient.async_state",
+            new_callable=AsyncMock,
+            return_value=STATE_BODY,
+        ) as mock_state,
+    ):
+        await hass.services.async_call(
+            "light", "turn_off", {"entity_id": ENTITY_ID}, blocking=True
+        )
+        await hass.async_block_till_done()
+
+    assert hass.states.get(ENTITY_ID).state == STATE_OFF
+    assert mock_set_screen.await_count == 1
+    assert mock_state.await_count == 0
+
+
+async def test_connection_error_during_command_raises_homeassistant_error(hass):
+    """A device that drops off-network mid-command surfaces a HomeAssistantError,
+    not a raw RustyConnectionError traceback / "Unknown error" in the UI.
+    """
+    await _setup(hass)
+
+    with patch(
+        "custom_components.rusty.api.RustyClient.async_set_screen",
+        new_callable=AsyncMock,
+        side_effect=RustyConnectionError("cannot connect"),
+    ):
+        with pytest.raises(HomeAssistantError) as excinfo:
+            await hass.services.async_call(
+                "light", "turn_off", {"entity_id": ENTITY_ID}, blocking=True
+            )
+
+    assert "cannot connect" in str(excinfo.value)
+
+
+async def test_malformed_command_response_does_not_poison_the_coordinator(hass):
+    """A command response missing a section is ignored: no KeyError out of the
+    service call, the last good data stays, and success is not forced to True.
+    """
+    entry = await _setup(hass)
+    coordinator = entry.runtime_data
+
+    with (
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_screen",
+            new_callable=AsyncMock,
+            return_value={"device": {"id": DEVICE_ID}},
+        ),
+        patch(
+            "custom_components.rusty.coordinator.RustyClient.async_state",
+            new_callable=AsyncMock,
+            return_value=STATE_BODY,
+        ),
+    ):
+        await hass.services.async_call(
+            "light", "turn_on", {"entity_id": ENTITY_ID}, blocking=True
+        )
+        await hass.async_block_till_done()
+
+    assert coordinator.data == STATE_BODY
+    assert coordinator.last_update_success is True
+    # The entity still parses cleanly off the last good snapshot.
+    assert hass.states.get(ENTITY_ID).attributes["brightness"] == 204
 
 
 async def test_unavailable_when_coordinator_update_fails(hass):
