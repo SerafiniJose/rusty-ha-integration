@@ -55,6 +55,11 @@ class RustyClient:
         self._port = port
         self._base_url = f"http://{host}:{port}"
 
+    @property
+    def host(self) -> str:
+        """The device host this client talks to (for log messages)."""
+        return self._host
+
     async def async_state(self) -> dict[str, Any]:
         """Fetch the device's current state via GET /api/state."""
         return await self._request("GET", "/api/state")

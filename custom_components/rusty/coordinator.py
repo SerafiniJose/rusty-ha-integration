@@ -15,9 +15,41 @@ from .const import DOMAIN, SCAN_INTERVAL_SECONDS
 
 _LOGGER = logging.getLogger(__name__)
 
-_REQUIRED_STATE_KEYS = ("device", "screen", "volume", "playing")
+# Every key the integration actually indexes, section by section. Entities read
+# these two levels deep without re-checking, so this is where they get checked -
+# once, for both the /api/state poll and command responses.
+_REQUIRED_STATE_KEYS: dict[str, tuple[str, ...]] = {
+    "device": ("id",),
+    "screen": ("on", "brightness"),
+    "volume": ("value", "fixed"),
+    "playing": ("spotify", "dlna"),
+}
 
 type RustyConfigEntry = ConfigEntry[RustyCoordinator]
+
+
+def _validate_state(state: Any) -> dict[str, Any]:
+    """Return `state` if it has every key the integration reads, else raise.
+
+    `device` is consumed by both async_setup_entry (device registration) and
+    the entities, so its `id` must additionally be non-empty; the entities read
+    the other sections' leaves directly, so those must simply be present.
+    """
+    if not isinstance(state, Mapping):
+        raise UpdateFailed("malformed state")
+
+    for section, leaf_keys in _REQUIRED_STATE_KEYS.items():
+        value = state.get(section)
+        if not isinstance(value, Mapping):
+            raise UpdateFailed("malformed state")
+        for leaf in leaf_keys:
+            if leaf not in value:
+                raise UpdateFailed("malformed state")
+
+    if not state["device"]["id"]:
+        raise UpdateFailed("malformed state")
+
+    return state
 
 
 class RustyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -50,16 +82,27 @@ class RustyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # error status, bad JSON) uniformly: never surface partial data.
             raise UpdateFailed(str(err)) from err
 
-        for key in _REQUIRED_STATE_KEYS:
-            if key not in state:
-                raise UpdateFailed("malformed state")
+        return _validate_state(state)
 
-        # `device` is consumed by both async_setup_entry (device registration)
-        # and Task 5's entities; guarantee here, for every consumer, that it's
-        # a mapping with a usable (non-empty) id, so callers can safely rely
-        # on `state["device"]["id"]` without re-checking its shape.
-        device = state["device"]
-        if not isinstance(device, Mapping) or not device.get("id"):
-            raise UpdateFailed("malformed state")
+    async def async_apply_command_result(self, state: Any) -> None:
+        """Adopt the full state a command (POST) returned as the new data.
 
-        return state
+        Command responses go through exactly the same validation as the poll,
+        so a truncated or unexpected body can never be written into
+        `coordinator.data` - nor silently flip `last_update_success` to True.
+        A body that doesn't validate is logged and answered with a refresh
+        instead, leaving the last good data in place.
+        """
+        try:
+            validated = _validate_state(state)
+        except UpdateFailed:
+            _LOGGER.warning(
+                "Ignoring malformed state in a command response from %s; "
+                "falling back to a refresh. Body: %s",
+                self.client.host,
+                state,
+            )
+            await self.async_request_refresh()
+            return
+
+        self.async_set_updated_data(validated)

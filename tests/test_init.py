@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_HOST, CONF_PORT
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.rusty.api import RustyConnectionError
@@ -157,6 +158,66 @@ async def test_device_not_a_mapping_fails_refresh_and_setup_retry(hass):
     entry.add_to_hass(hass)
 
     malformed_body = {**STATE_BODY, "device": "not-a-mapping"}
+
+    with patch(
+        "custom_components.rusty.coordinator.RustyClient.async_state",
+        return_value=malformed_body,
+    ):
+        result = await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert result is False
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+
+
+@pytest.mark.parametrize(
+    ("platform", "unique_id"),
+    [
+        ("light", f"{DEVICE_ID}_screen"),
+        ("number", f"{DEVICE_ID}_volume"),
+        ("binary_sensor", f"{DEVICE_ID}_spotify_playing"),
+        ("binary_sensor", f"{DEVICE_ID}_dlna_playing"),
+    ],
+)
+async def test_entity_unique_ids_are_stable(hass, platform, unique_id):
+    """Every entity keeps its device-derived unique_id.
+
+    A silent unique_id change permanently orphans the user's existing entity
+    (and every automation pointing at it), so pin all four here.
+    """
+    entry = _make_entry()
+    entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.rusty.coordinator.RustyClient.async_state",
+        return_value=STATE_BODY,
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    registry = er.async_get(hass)
+    entity_id = registry.async_get_entity_id(platform, DOMAIN, unique_id)
+    assert entity_id is not None, f"no {platform} entity with unique_id {unique_id}"
+    assert hass.states.get(entity_id) is not None
+
+
+@pytest.mark.parametrize(
+    "malformed_body",
+    [
+        {**STATE_BODY, "screen": {}},
+        {**STATE_BODY, "screen": {"on": True}},
+        {**STATE_BODY, "volume": {"value": 42}},
+        {**STATE_BODY, "playing": {"spotify": True}},
+        {**STATE_BODY, "screen": "not-a-mapping"},
+        {**STATE_BODY, "volume": None},
+    ],
+)
+async def test_missing_leaf_keys_fail_the_update(hass, malformed_body):
+    """Sections present but missing the leaves the entities read are malformed
+    too - the entry retries instead of loading entities that KeyError.
+    """
+    entry = _make_entry()
+    entry.add_to_hass(hass)
 
     with patch(
         "custom_components.rusty.coordinator.RustyClient.async_state",
