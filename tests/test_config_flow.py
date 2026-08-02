@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from ipaddress import ip_address
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant import config_entries
@@ -29,12 +29,12 @@ STATE_BODY = {
 
 
 def _zeroconf_discovery_info(
-    host: str = HOST, properties: dict | None = None
+    host: str = HOST, properties: dict | None = None, port: int | None = DEFAULT_PORT
 ) -> ZeroconfServiceInfo:
     return ZeroconfServiceInfo(
         ip_address=ip_address(host),
         ip_addresses=[ip_address(host)],
-        port=DEFAULT_PORT,
+        port=port,
         hostname="rusty.local.",
         type="_rusty._tcp.local.",
         name="rusty._rusty._tcp.local.",
@@ -94,6 +94,89 @@ async def test_zeroconf_duplicate_updates_host_and_aborts(hass):
 
     updated_entry = hass.config_entries.async_get_entry(existing_entry.entry_id)
     assert updated_entry.data[CONF_HOST] == HOST
+
+
+async def test_zeroconf_uses_the_advertised_port(hass):
+    """A device advertising a non-default port is probed and stored on that port."""
+    discovery_info = _zeroconf_discovery_info(port=9876)
+
+    with patch(
+        "custom_components.rusty.config_flow.RustyConfigFlow._async_probe",
+        new_callable=AsyncMock,
+        return_value=STATE_BODY,
+    ) as mock_probe:
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": config_entries.SOURCE_ZEROCONF},
+            data=discovery_info,
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input={}
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"] == {CONF_HOST: HOST, CONF_PORT: 9876}
+    # The probe went to the advertised port too, not to 8765.
+    mock_probe.assert_awaited_once_with(HOST, 9876)
+
+
+async def test_zeroconf_without_a_port_falls_back_to_the_default(hass):
+    """A record that omits the port still gets DEFAULT_PORT."""
+    discovery_info = _zeroconf_discovery_info(port=None)
+
+    with patch(
+        "custom_components.rusty.config_flow.RustyClient.async_state",
+        return_value=STATE_BODY,
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": config_entries.SOURCE_ZEROCONF},
+            data=discovery_info,
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input={}
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"] == {CONF_HOST: HOST, CONF_PORT: DEFAULT_PORT}
+
+
+async def test_zeroconf_probe_failure_aborts(hass):
+    """A discovered device that can't be probed aborts with cannot_connect."""
+    discovery_info = _zeroconf_discovery_info(properties={"api": "1"})
+
+    with patch(
+        "custom_components.rusty.config_flow.RustyClient.async_state",
+        side_effect=RustyConnectionError("cannot connect"),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": config_entries.SOURCE_ZEROCONF},
+            data=discovery_info,
+        )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "cannot_connect"
+    assert hass.config_entries.async_entries(DOMAIN) == []
+
+
+async def test_zeroconf_malformed_state_aborts(hass):
+    """A discovered device whose /api/state has no usable device id/name aborts."""
+    discovery_info = _zeroconf_discovery_info(properties={"api": "1"})
+
+    with patch(
+        "custom_components.rusty.config_flow.RustyClient.async_state",
+        return_value={"unexpected": "shape"},
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": config_entries.SOURCE_ZEROCONF},
+            data=discovery_info,
+        )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "cannot_connect"
+    assert hass.config_entries.async_entries(DOMAIN) == []
 
 
 async def test_manual_happy_path(hass):

@@ -28,6 +28,12 @@ If you rename the device, its entity IDs change accordingly.
 The device page also includes a "Visit" link to the device's local web UI. That link only works
 when you're on the same local network as the device (LAN-only, not reachable remotely).
 
+## A note on security
+
+The Rusty device's API is plain HTTP with **no authentication** — anyone who can reach the device
+on your network can turn its screen on or off, change its brightness, and change its volume. Keep
+the device on a network you trust (a separate IoT VLAN if you run one).
+
 ## Installation
 
 1. In Home Assistant, go to **HACS** → the **⋮** menu → **Custom repositories**.

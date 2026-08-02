@@ -29,11 +29,12 @@ class RustyConfigFlow(ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         """Initialize the flow's discovered-device state."""
         self._discovered_host: str | None = None
+        self._discovered_port: int = DEFAULT_PORT
         self._discovered_name: str | None = None
 
-    async def _async_probe(self, host: str) -> dict[str, Any]:
+    async def _async_probe(self, host: str, port: int = DEFAULT_PORT) -> dict[str, Any]:
         """Probe the device's /api/state, returning the parsed JSON state."""
-        client = RustyClient(host, async_get_clientsession(self.hass))
+        client = RustyClient(host, async_get_clientsession(self.hass), port=port)
         return await client.async_state()
 
     async def async_step_zeroconf(
@@ -41,6 +42,9 @@ class RustyConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Handle a flow initiated by zeroconf discovery."""
         host = discovery_info.host
+        # The advertised port is authoritative; DEFAULT_PORT is only the
+        # fallback for a record that omits it.
+        port = discovery_info.port or DEFAULT_PORT
         device_id = discovery_info.properties.get("id")
         had_txt_id = bool(device_id)
 
@@ -51,7 +55,7 @@ class RustyConfigFlow(ConfigFlow, domain=DOMAIN):
             self._abort_if_unique_id_configured(updates={CONF_HOST: host})
 
         try:
-            state = await self._async_probe(host)
+            state = await self._async_probe(host, port)
         except RustyApiError:
             return self.async_abort(reason="cannot_connect")
 
@@ -68,6 +72,7 @@ class RustyConfigFlow(ConfigFlow, domain=DOMAIN):
             self._abort_if_unique_id_configured(updates={CONF_HOST: host})
 
         self._discovered_host = host
+        self._discovered_port = port
         self._discovered_name = device_name
         self.context["title_placeholders"] = {"name": device_name}
         return await self.async_step_zeroconf_confirm()
@@ -79,7 +84,10 @@ class RustyConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             return self.async_create_entry(
                 title=self._discovered_name,
-                data={CONF_HOST: self._discovered_host, CONF_PORT: DEFAULT_PORT},
+                data={
+                    CONF_HOST: self._discovered_host,
+                    CONF_PORT: self._discovered_port,
+                },
             )
 
         return self.async_show_form(
