@@ -3,22 +3,65 @@
     "step": {
       "user": {
         "title": "Connect to Rusty",
-        "description": "Enter the IP address or hostname of your Rusty device.",
+        "description": "Enter the IP address or hostname of your Rusty device. Leave the password blank if none is set.",
         "data": {
-          "host": "Host"
+          "host": "Host",
+          "password": "API password (optional)"
         }
       },
       "zeroconf_confirm": {
         "title": "Discovered Rusty device",
         "description": "Do you want to add the Rusty device named `{name}` to Home Assistant?"
+      },
+      "rediscovery_confirm": {
+        "title": "Rusty device moved",
+        "description": "The Rusty device `{name}` was found at a new address (`{host}`), previously at `{old_host}`). Enter the API password to verify the device's identity, then confirm to update the stored address.",
+        "data": {
+          "password": "API password"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate with Rusty",
+        "description": "The password for Rusty at `{host}` was rejected. Enter the current API password.",
+        "data": {
+          "password": "API password"
+        }
       }
     },
     "error": {
-      "cannot_connect": "Failed to connect"
+      "cannot_connect": "Failed to connect",
+      "invalid_auth": "Wrong password"
     },
     "abort": {
       "already_configured": "Device is already configured",
-      "cannot_connect": "Failed to connect"
+      "cannot_connect": "Failed to connect",
+      "reauth_successful": "Re-authentication was successful"
+    }
+  },
+  "entity": {
+    "select": {
+      "panel": {
+        "name": "Active panel"
+      },
+      "ha_dashboard": {
+        "name": "HA dashboard"
+      }
+    }
+  },
+  "services": {
+    "announce": {
+      "name": "Announce",
+      "description": "Speaks text on a Rusty device using on-device text-to-speech. Select the target device using the device picker.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The Rusty device to speak on."
+        },
+        "text": {
+          "name": "Text",
+          "description": "The text to speak (1–4000 characters)."
+        }
+      }
     }
   }
 }

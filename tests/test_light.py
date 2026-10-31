@@ -356,3 +356,29 @@ async def test_unavailable_when_coordinator_update_fails(hass):
 
     state = hass.states.get(ENTITY_ID)
     assert state.state == "unavailable"
+
+
+async def test_unavailable_when_screen_available_false(hass):
+    """screen.available = false makes the light entity unavailable."""
+    body = {**STATE_BODY, "screen": {**STATE_BODY["screen"], "available": False}}
+    await _setup(hass, body)
+
+    state = hass.states.get(ENTITY_ID)
+    assert state.state == "unavailable"
+
+
+async def test_turn_on_succeeds_when_screen_not_writable(hass):
+    """Regression R5: writable=False is 'window' mode — turn_on must still work."""
+    body = {**STATE_BODY, "screen": {**STATE_BODY["screen"], "writable": False, "on": False}}
+    await _setup(hass, body)
+
+    result_body = {**body, "screen": {**body["screen"], "on": True}}
+    with patch(
+        "custom_components.rusty.api.RustyClient.async_set_screen",
+        new_callable=AsyncMock,
+        return_value=result_body,
+    ):
+        # Must not raise — window mode does not block turn_on.
+        await hass.services.async_call(
+            "light", "turn_on", {"entity_id": ENTITY_ID}, blocking=True
+        )

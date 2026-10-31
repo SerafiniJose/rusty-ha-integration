@@ -22,17 +22,60 @@ device named "Rusty", they look like:
 - `number.rusty_volume` — device volume, as a 0-100 slider
 - `binary_sensor.rusty_spotify_playing` — on when Spotify is playing on the device
 - `binary_sensor.rusty_dlna_playing` — on when DLNA playback is active on the device
+- `select.rusty_active_panel` — navigates between Rusty panels (Spotify, Home Assistant, DLNA…)
+- `select.rusty_ha_dashboard` — selects the active HA dashboard on the device's chip bar
+  (only appears when the device has HA dashboards configured)
 
 If you rename the device, its entity IDs change accordingly.
 
 The device page also includes a "Visit" link to the device's local web UI. That link only works
 when you're on the same local network as the device (LAN-only, not reachable remotely).
 
-## A note on security
+## Services
 
-The Rusty device's API is plain HTTP with **no authentication** — anyone who can reach the device
-on your network can turn its screen on or off, change its brightness, and change its volume. Keep
-the device on a network you trust (a separate IoT VLAN if you run one).
+### `rusty.announce`
+
+Speaks text on a Rusty device using its on-device text-to-speech engine. Select the target
+device using the device picker in the service call UI.
+
+| Field | Description |
+|-------|-------------|
+| `device_id` | The Rusty device (select from the device picker) |
+| `text` | The text to speak (1–4000 characters) |
+
+## Authentication
+
+The Rusty API supports an optional Bearer password. Set it in the Rusty app under
+Settings → Remote Control → API Password.
+
+- If no password is set, the integration connects without authentication.
+- If a password is set, enter it when adding the integration. Home Assistant keeps it
+  in the config entry in `.storage/core.config_entries` on the HA host; the integration
+  does not encrypt it, so protect access to the HA config directory and its backups.
+- If the password changes, Home Assistant will detect the `401` response and prompt
+  you to re-authenticate via a notification.
+
+**Note:** The API password travels as a Bearer token in plain HTTP on the LAN. Keep the
+device on a network you trust (a separate IoT VLAN if you run one).
+
+### Zeroconf security
+
+When a known Rusty device is detected at a new IP address, the integration asks for
+explicit confirmation before updating the stored address. If the device has a password,
+you must re-enter the credential to confirm the move — this prevents a rogue mDNS
+advertisement from redirecting traffic to an impersonator.
+
+## TLS / HTTPS
+
+If your HA instance uses HTTPS with a self-signed certificate, the Rusty Android app's
+WebView will reject it unless the CA is trusted by Android:
+
+1. Export your CA certificate as a `.crt` or `.pem` file.
+2. On the Echo Show / Android device: **Settings → Security → Install certificate → CA certificate**.
+3. Select the exported file.
+
+After importing the CA, the WebView will trust certificates signed by that CA.
+(Cleartext HTTP still works too if you prefer to keep HA on http.)
 
 ## Installation
 

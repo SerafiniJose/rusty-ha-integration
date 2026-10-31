@@ -37,22 +37,28 @@ class RustyConnectionError(RustyApiError):
     """Raised when the Rusty device cannot be reached (connect failure or timeout)."""
 
 
+class RustyAuthError(RustyApiError):
+    """Raised when the device responds 401 Unauthorized (wrong or missing password)."""
+
+
 class RustyVolumeFixedError(RustyApiError):
     """Raised when a volume write is rejected (HTTP 409) because volume is fixed."""
 
 
 class RustyClient:
-    """Client for the Rusty device's local, unauthenticated HTTP API."""
+    """Client for the Rusty device's local HTTP API."""
 
     def __init__(
         self,
         host: str,
         session: aiohttp.ClientSession,
         port: int = DEFAULT_PORT,
+        password: str | None = None,
     ) -> None:
         self._host = host
         self._session = session
         self._port = port
+        self._password = password
         self._base_url = f"http://{host}:{port}"
 
     @property
@@ -89,16 +95,51 @@ class RustyClient:
                 raise RustyVolumeFixedError(str(err), status=err.status) from err
             raise
 
+    async def async_set_panel(self, panel_id: str) -> dict[str, Any]:
+        """Navigate to a panel via POST /api/panel.
+
+        Returns the resulting full state as a dict.
+        """
+        return await self._request("POST", "/api/panel", json={"id": panel_id})
+
+    async def async_set_dashboard(self, path: str) -> dict[str, Any]:
+        """Navigate to an HA dashboard via POST /api/home_assistant/dashboard.
+
+        `path` is the url_path of a dashboard on the device's chip bar.
+        Returns the resulting full state as a dict.
+        Raises RustyApiError (status 400) when the path is not on the chip bar,
+        or (status 404) when the Home Assistant feature is switched off.
+        """
+        return await self._request(
+            "POST", "/api/home_assistant/dashboard", json={"path": path}
+        )
+
+    async def async_announce(self, text: str) -> None:
+        """Speak [text] on the device via POST /api/announce/text.
+
+        Returns when the request is accepted (202); the actual playback is async.
+        Raises RustyApiError on any failure (including 503 when TTS is unavailable).
+        """
+        # 202 Accepted is a success status; _request only raises on >= 400, so
+        # we need to handle 202 the same way as 200 — just drop the body.
+        await self._request("POST", "/api/announce/text", json={"text": text}, accept_202=True)
+
     async def _request(
         self,
         method: str,
         path: str,
         json: dict[str, Any] | None = None,
+        accept_202: bool = False,
     ) -> dict[str, Any]:
         url = f"{self._base_url}{path}"
+        headers: dict[str, str] = {}
+        if self._password is not None:
+            headers["Authorization"] = f"Bearer {self._password}"
         try:
             async with asyncio.timeout(_TIMEOUT_SECONDS):
-                async with self._session.request(method, url, json=json) as resp:
+                async with self._session.request(
+                    method, url, json=json, headers=headers
+                ) as resp:
                     status = resp.status
                     body_text = await resp.text()
         except (aiohttp.ClientError, TimeoutError) as err:
@@ -111,8 +152,15 @@ class RustyClient:
         except ValueError:
             data = _NOT_JSON
 
+        if status == 401:
+            raise RustyAuthError(_error_message(status, data, body_text), status=status)
+
         if status >= 400:
             raise RustyApiError(_error_message(status, data, body_text), status=status)
+
+        # 202 Accepted is a valid success for announce; return empty dict.
+        if accept_202 and status == 202:
+            return {}
 
         if data is _NOT_JSON:
             raise RustyApiError(f"Invalid JSON response from {url}: {body_text!r}")

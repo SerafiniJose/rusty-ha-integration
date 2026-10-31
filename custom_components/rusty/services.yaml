@@ -1,0 +1,21 @@
+announce:
+  name: Announce
+  description: >
+    Speaks text on a Rusty device using its on-device text-to-speech engine.
+    Select the target device from the picker — the device_id is resolved
+    automatically from the Rusty integration.
+  fields:
+    device_id:
+      name: Device
+      description: The Rusty device to speak on.
+      required: true
+      selector:
+        device:
+          integration: rusty
+    text:
+      name: Text
+      description: The text to speak (1–4000 characters).
+      required: true
+      selector:
+        text:
+          multiline: true

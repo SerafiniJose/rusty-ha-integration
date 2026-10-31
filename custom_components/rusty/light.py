@@ -45,6 +45,11 @@ class RustyScreenLight(RustyEntity, LightEntity):
         super().__init__(coordinator, "screen")
 
     @property
+    def available(self) -> bool:
+        """Unavailable when the coordinator has no good data or screen is not available."""
+        return super().available and self.coordinator.data["screen"]["available"]
+
+    @property
     def is_on(self) -> bool:
         """Return whether the screen is on."""
         return self.coordinator.data["screen"]["on"]
@@ -55,7 +60,13 @@ class RustyScreenLight(RustyEntity, LightEntity):
         return round(self.coordinator.data["screen"]["brightness"] * 255 / 100)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        """Turn the screen on, optionally setting brightness, in one API call."""
+        """Turn the screen on, optionally setting brightness, in one API call.
+
+        writable=False means the device is in 'window' mode (WRITE_SETTINGS
+        not granted), not that the screen cannot be turned on.  The device
+        always accepts POST /api/screen; only the system-brightness channel
+        is unavailable.  Expose writable as an attribute for informational use.
+        """
         ha_brightness = kwargs.get(ATTR_BRIGHTNESS)
         device_brightness = (
             _ha_brightness_to_device(ha_brightness) if ha_brightness else None

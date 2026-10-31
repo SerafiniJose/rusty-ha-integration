@@ -8,9 +8,10 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api import RustyApiError, RustyClient
+from .api import RustyApiError, RustyAuthError, RustyClient
 from .const import DOMAIN, SCAN_INTERVAL_SECONDS
 
 _LOGGER = logging.getLogger(__name__)
@@ -20,7 +21,7 @@ _LOGGER = logging.getLogger(__name__)
 # once, for both the /api/state poll and command responses.
 _REQUIRED_STATE_KEYS: dict[str, tuple[str, ...]] = {
     "device": ("id",),
-    "screen": ("on", "brightness"),
+    "screen": ("on", "brightness", "available", "writable"),
     "volume": ("value", "fixed"),
     "playing": ("spotify", "dlna"),
 }
@@ -34,6 +35,13 @@ def _validate_state(state: Any) -> dict[str, Any]:
     `device` is consumed by both async_setup_entry (device registration) and
     the entities, so its `id` must additionally be non-empty; the entities read
     the other sections' leaves directly, so those must simply be present.
+
+    Also validates that leaf values have the correct types so entities can read
+    them without additional guards:
+    - screen.on, screen.available, screen.writable, volume.fixed,
+      playing.spotify, playing.dlna must be booleans.
+    - screen.brightness must be an integer in 1..100.
+    - volume.value must be an integer in 0..100.
     """
     if not isinstance(state, dict):
         raise UpdateFailed("malformed state")
@@ -48,6 +56,32 @@ def _validate_state(state: Any) -> dict[str, Any]:
 
     if not state["device"]["id"]:
         raise UpdateFailed("malformed state")
+
+    screen = state["screen"]
+    # Type validation for boolean fields.
+    for bool_key in ("on", "available", "writable"):
+        if not isinstance(screen[bool_key], bool):
+            raise UpdateFailed("malformed state")
+    # Brightness: integer 1..100.
+    brightness = screen["brightness"]
+    if not isinstance(brightness, int) or isinstance(brightness, bool):
+        raise UpdateFailed("malformed state")
+    if not (1 <= brightness <= 100):
+        raise UpdateFailed("malformed state")
+
+    volume = state["volume"]
+    if not isinstance(volume["fixed"], bool):
+        raise UpdateFailed("malformed state")
+    vol_value = volume["value"]
+    if not isinstance(vol_value, int) or isinstance(vol_value, bool):
+        raise UpdateFailed("malformed state")
+    if not (0 <= vol_value <= 100):
+        raise UpdateFailed("malformed state")
+
+    playing = state["playing"]
+    for bool_key in ("spotify", "dlna"):
+        if not isinstance(playing[bool_key], bool):
+            raise UpdateFailed("malformed state")
 
     return state
 
@@ -77,6 +111,10 @@ class RustyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Fetch and validate the device's current state."""
         try:
             state = await self.client.async_state()
+        except RustyAuthError as err:
+            # 401 means the stored password is wrong or was removed from the
+            # device. Raise ConfigEntryAuthFailed so HA triggers re-auth flow.
+            raise ConfigEntryAuthFailed(str(err)) from err
         except RustyApiError as err:
             # Covers RustyConnectionError and any other API failure (e.g. HTTP
             # error status, bad JSON) uniformly: never surface partial data.

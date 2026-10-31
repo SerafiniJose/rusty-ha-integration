@@ -7,6 +7,7 @@ from aioresponses import aioresponses
 
 from custom_components.rusty.api import (
     RustyApiError,
+    RustyAuthError,
     RustyClient,
     RustyConnectionError,
     RustyVolumeFixedError,
@@ -219,3 +220,102 @@ async def test_async_state_non_json_body_raises_api_error(mock_aioresponse):
         client = RustyClient(HOST, session)
         with pytest.raises(RustyApiError):
             await client.async_state()
+
+
+async def test_auth_error_on_401(mock_aioresponse):
+    """A 401 response raises RustyAuthError (a subclass of RustyApiError)."""
+    mock_aioresponse.get(
+        f"{BASE_URL}/api/state",
+        payload={"error": "password required"},
+        status=401,
+    )
+
+    async with aiohttp.ClientSession() as session:
+        client = RustyClient(HOST, session)
+        with pytest.raises(RustyAuthError) as excinfo:
+            await client.async_state()
+
+    assert excinfo.value.status == 401
+    assert str(excinfo.value) == "password required"
+
+
+async def test_auth_error_is_api_error_subclass(mock_aioresponse):
+    """RustyAuthError is a subclass of RustyApiError so callers can catch both."""
+    mock_aioresponse.get(f"{BASE_URL}/api/state", body="", status=401)
+
+    async with aiohttp.ClientSession() as session:
+        client = RustyClient(HOST, session)
+        with pytest.raises(RustyApiError):
+            await client.async_state()
+
+
+async def test_bearer_token_sent_when_password_set(mock_aioresponse):
+    """When a password is configured, every request carries Authorization: Bearer."""
+    mock_aioresponse.get(f"{BASE_URL}/api/state", payload=STATE_BODY, status=200)
+
+    async with aiohttp.ClientSession() as session:
+        client = RustyClient(HOST, session, password="s3cr3t")
+        await client.async_state()
+
+    key = ("GET", aiohttp.client.URL(f"{BASE_URL}/api/state"))
+    req = mock_aioresponse.requests[key][-1]
+    assert req.kwargs.get("headers", {}).get("Authorization") == "Bearer s3cr3t"
+
+
+async def test_no_auth_header_when_no_password(mock_aioresponse):
+    """Without a password, no Authorization header is sent."""
+    mock_aioresponse.get(f"{BASE_URL}/api/state", payload=STATE_BODY, status=200)
+
+    async with aiohttp.ClientSession() as session:
+        client = RustyClient(HOST, session)
+        await client.async_state()
+
+    key = ("GET", aiohttp.client.URL(f"{BASE_URL}/api/state"))
+    req = mock_aioresponse.requests[key][-1]
+    assert "Authorization" not in (req.kwargs.get("headers") or {})
+
+
+async def test_announce_accepts_202(mock_aioresponse):
+    """async_announce succeeds on a 202 Accepted response (does not raise)."""
+    mock_aioresponse.post(
+        f"{BASE_URL}/api/announce/text",
+        body='{"status":"playing"}',
+        status=202,
+    )
+
+    async with aiohttp.ClientSession() as session:
+        client = RustyClient(HOST, session)
+        await client.async_announce("hello")  # should not raise
+
+
+async def test_announce_posts_text(mock_aioresponse):
+    """async_announce posts the text field in the JSON body."""
+    mock_aioresponse.post(
+        f"{BASE_URL}/api/announce/text",
+        body='{"status":"playing"}',
+        status=202,
+    )
+
+    async with aiohttp.ClientSession() as session:
+        client = RustyClient(HOST, session)
+        await client.async_announce("say this")
+
+    key = ("POST", aiohttp.client.URL(f"{BASE_URL}/api/announce/text"))
+    req = mock_aioresponse.requests[key][-1]
+    assert req.kwargs["json"] == {"text": "say this"}
+
+
+async def test_announce_raises_on_503(mock_aioresponse):
+    """A 503 from /api/announce/text (TTS unavailable) raises RustyApiError."""
+    mock_aioresponse.post(
+        f"{BASE_URL}/api/announce/text",
+        payload={"error": "text-to-speech is not available on the device"},
+        status=503,
+    )
+
+    async with aiohttp.ClientSession() as session:
+        client = RustyClient(HOST, session)
+        with pytest.raises(RustyApiError) as excinfo:
+            await client.async_announce("hello")
+
+    assert excinfo.value.status == 503
