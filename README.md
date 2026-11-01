@@ -80,7 +80,7 @@ After importing the CA, the WebView will trust certificates signed by that CA.
 ## Installation
 
 1. In Home Assistant, go to **HACS** → the **⋮** menu → **Custom repositories**.
-2. Add this repository's URL (`https://github.com/SerafiniJose/rusty-homeassistant`) with category **Integration**.
+2. Add this repository's URL (`https://github.com/SerafiniJose/rusty-ha-integration`) with category **Integration**.
 3. Find **Rusty** in HACS and click **Install**.
 4. **Restart Home Assistant.**
 5. Go to **Settings → Devices & Services**. If Rusty was discovered on your network, it will show up
