@@ -8,7 +8,7 @@ Rusty is discovered automatically via zeroconf, or can be added manually with th
 
 ## Requirements
 
-- Home Assistant >= 2025.6
+- Home Assistant >= 2026.10
 - A device running the Rusty Android app with **Remote Control** enabled in its settings
   (Rusty app → Settings → Remote Control)
 - The Home Assistant host must be able to reach the Rusty device on your local network (port 8765)

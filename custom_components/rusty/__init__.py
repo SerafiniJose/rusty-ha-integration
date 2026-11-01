@@ -37,8 +37,14 @@ _ANNOUNCE_SERVICE = "announce"
 def _coordinator_for_rusty_id(
     hass: HomeAssistant, rusty_id: str
 ) -> RustyCoordinator | None:
-    """Find the loaded coordinator whose device.id matches rusty_id."""
+    """Find the loaded coordinator whose device.id matches rusty_id.
+
+    Only considers LOADED entries — FAILED_UNLOAD entries retain runtime_data
+    but their platforms may be partially torn down.
+    """
     for entry in hass.config_entries.async_entries(DOMAIN):
+        if entry.state is not ConfigEntryState.LOADED:
+            continue
         if not hasattr(entry, "runtime_data"):
             continue
         coordinator: RustyCoordinator = entry.runtime_data
@@ -134,6 +140,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: RustyConfigEntry) -> bo
         if e.entry_id != entry.entry_id
         and e.state is ConfigEntryState.LOADED
     ]
-    if not remaining:
+    if unloaded and not remaining:
         hass.services.async_remove(DOMAIN, _ANNOUNCE_SERVICE)
     return unloaded

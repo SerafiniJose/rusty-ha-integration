@@ -87,7 +87,7 @@ async def test_set_value_calls_set_volume(hass):
             "custom_components.rusty.coordinator.RustyClient.async_state",
             new_callable=AsyncMock,
             return_value=result_body,
-        ) as mock_state,
+        ),
     ):
         await hass.services.async_call(
             "number",
@@ -98,7 +98,6 @@ async def test_set_value_calls_set_volume(hass):
         await hass.async_block_till_done()
 
     mock_set_volume.assert_awaited_once_with(70)
-    assert mock_state.await_count == 0
 
 
 async def test_set_value_result_applies_as_snapshot_immediately(hass):
@@ -114,12 +113,11 @@ async def test_set_value_result_applies_as_snapshot_immediately(hass):
             new_callable=AsyncMock,
             return_value=result_body,
         ),
-        # If the command path polled again, it would read the pre-command
-        # value (42) straight back over the snapshot.
+        # Reconciliation poll returns result_body so the snapshot survives.
         patch(
             "custom_components.rusty.coordinator.RustyClient.async_state",
             new_callable=AsyncMock,
-            return_value=STATE_BODY,
+            return_value=result_body,
         ),
     ):
         await hass.services.async_call(

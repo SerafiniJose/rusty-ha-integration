@@ -420,6 +420,7 @@ async def test_duplicate_dashboard_titles_are_distinct_and_selectable(hass):
             new_callable=AsyncMock,
             return_value=body,
         ) as mock_set_dash,
+        patch("custom_components.rusty.coordinator.RustyClient.async_state", return_value=body),
     ):
         for option in ("Home (dash-b)", "Home (lovelace)"):
             await hass.services.async_call(

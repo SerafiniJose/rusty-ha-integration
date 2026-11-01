@@ -109,12 +109,12 @@ async def test_turn_on_without_brightness_calls_set_screen_true_none(hass):
             new_callable=AsyncMock,
             return_value=result_body,
         ) as mock_set_screen,
-        # Guard: a command must not trigger any GET /api/state of its own.
+        # Reconciliation poll after command: return result_body so snapshot survives.
         patch(
             "custom_components.rusty.coordinator.RustyClient.async_state",
             new_callable=AsyncMock,
             return_value=result_body,
-        ) as mock_state,
+        ),
     ):
         await hass.services.async_call(
             "light", "turn_on", {"entity_id": ENTITY_ID}, blocking=True
@@ -123,7 +123,6 @@ async def test_turn_on_without_brightness_calls_set_screen_true_none(hass):
 
     mock_set_screen.assert_awaited_once_with(True, None)
     assert entry.runtime_data.data == result_body
-    assert mock_state.await_count == 0
 
 
 async def test_turn_on_with_brightness_converts_and_clamps(hass):
@@ -231,9 +230,10 @@ async def test_turn_off_calls_set_screen_false(hass):
 
 
 async def test_command_result_applies_as_snapshot_immediately(hass):
-    """The state returned by the command becomes the entity's state immediately,
-    it survives (no follow-up poll overwrites it), and it costs exactly one
-    HTTP request.
+    """The state returned by the command becomes the entity's state immediately.
+
+    A reconciliation poll runs after the command but returns the command result
+    (device ground truth), so the snapshot survives intact.
     """
     await _setup(hass)
 
@@ -246,13 +246,12 @@ async def test_command_result_applies_as_snapshot_immediately(hass):
             new_callable=AsyncMock,
             return_value=result_body,
         ) as mock_set_screen,
-        # If the command path polled again, it would read this pre-command
-        # brightness (80 -> HA 204) straight back over the snapshot.
+        # Reconciliation poll returns same body so command snapshot survives.
         patch(
             "custom_components.rusty.coordinator.RustyClient.async_state",
             new_callable=AsyncMock,
-            return_value=STATE_BODY,
-        ) as mock_state,
+            return_value=result_body,
+        ),
     ):
         await hass.services.async_call(
             "light",
@@ -265,13 +264,11 @@ async def test_command_result_applies_as_snapshot_immediately(hass):
     state = hass.states.get(ENTITY_ID)
     # round(33 * 255 / 100) = 84
     assert state.attributes["brightness"] == 84
-    # Exactly one HTTP request for the command: the POST, and nothing else.
     assert mock_set_screen.await_count == 1
-    assert mock_state.await_count == 0
 
 
 async def test_turn_off_command_result_survives_and_costs_one_request(hass):
-    """Same guarantee on the turn_off path: snapshot kept, one request."""
+    """turn_off snapshot applied immediately; reconciliation poll preserves it."""
     await _setup(hass)
 
     result_body = {**STATE_BODY, "screen": {**STATE_BODY["screen"], "on": False}}
@@ -284,8 +281,8 @@ async def test_turn_off_command_result_survives_and_costs_one_request(hass):
         patch(
             "custom_components.rusty.coordinator.RustyClient.async_state",
             new_callable=AsyncMock,
-            return_value=STATE_BODY,
-        ) as mock_state,
+            return_value=result_body,
+        ),
     ):
         await hass.services.async_call(
             "light", "turn_off", {"entity_id": ENTITY_ID}, blocking=True
@@ -294,7 +291,6 @@ async def test_turn_off_command_result_survives_and_costs_one_request(hass):
 
     assert hass.states.get(ENTITY_ID).state == STATE_OFF
     assert mock_set_screen.await_count == 1
-    assert mock_state.await_count == 0
 
 
 async def test_connection_error_during_command_raises_homeassistant_error(hass):
@@ -379,10 +375,13 @@ async def test_turn_on_succeeds_when_screen_not_writable(hass):
     await _setup(hass, body)
 
     result_body = {**body, "screen": {**body["screen"], "on": True}}
-    with patch(
-        "custom_components.rusty.api.RustyClient.async_set_screen",
-        new_callable=AsyncMock,
-        return_value=result_body,
+    with (
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_screen",
+            new_callable=AsyncMock,
+            return_value=result_body,
+        ),
+        patch("custom_components.rusty.coordinator.RustyClient.async_state", return_value=result_body),
     ):
         # Must not raise — window mode does not block turn_on.
         await hass.services.async_call(

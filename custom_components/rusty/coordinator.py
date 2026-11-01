@@ -144,6 +144,6 @@ class RustyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
 
         self.async_set_updated_data(validated)
-        # shortcut: no per-snapshot ordering; concurrent commands may briefly show stale
-        # state until the next coordinator poll (within SCAN_INTERVAL_SECONDS). No device
-        # timestamp in the API to order them. Reconciliation is via the regular poll.
+        # Immediately reconcile: a poll after every successful command corrects any
+        # out-of-order snapshot from concurrent commands (no device-side timestamps).
+        await self.async_request_refresh()

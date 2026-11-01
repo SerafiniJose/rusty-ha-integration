@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_HOST, CONF_PORT
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -678,11 +679,12 @@ async def test_announce_service_removed_when_no_loaded_entries_remain(hass):
 # ---------------------------------------------------------------------------
 
 
-async def test_concurrent_command_results_stale_state_corrected_by_poll(hass):
-    """Out-of-order command snapshots may leave stale state; the next poll corrects it.
+async def test_concurrent_command_results_reconciled_immediately(hass):
+    """Concurrent commands may apply out-of-order snapshots; the immediate reconciliation
+    poll corrects them.  This test FAILS on baseline (no reconciliation poll) and
+    PASSES when async_apply_command_result schedules async_request_refresh.
 
-    Demonstrates the bounded stale window and verifies that coordinator.async_refresh()
-    restores ground truth. Regression pin for concurrent-command behavior.
+    Regression pin for concurrent-command stale state (ponytail audit finding 7).
     """
     import asyncio
 
@@ -709,15 +711,97 @@ async def test_concurrent_command_results_stale_state_corrected_by_poll(hass):
         await coordinator.async_apply_command_result(state_vol_70)
         barrier.set()
 
-    await asyncio.gather(apply_55_after_70(), apply_70_then_signal())
-    # The last completer (55) wins: stale state
-    assert coordinator.data["volume"]["value"] == 55
-
-    # Next poll reconciles to device ground truth (vol=70)
+    # Ground truth: vol=70 (device reflects the 70 command; 55 was superseded).
     with patch(
         "custom_components.rusty.coordinator.RustyClient.async_state",
         return_value=state_vol_70,
     ):
-        await coordinator.async_refresh()
+        await asyncio.gather(apply_55_after_70(), apply_70_then_signal())
+        await hass.async_block_till_done()  # runs the reconciliation refresh(es)
 
-    assert coordinator.data["volume"]["value"] == 70  # corrected by poll
+    # After reconciliation poll: ground truth (vol=70) wins.
+    assert coordinator.data["volume"]["value"] == 70
+
+
+# ---------------------------------------------------------------------------
+# Regression tests — hallazgo 4 addendum: FAILED_UNLOAD routing invariants
+# ---------------------------------------------------------------------------
+
+
+async def test_announce_service_kept_when_unload_fails(hass):
+    """Service is NOT removed when the only entry fails to unload (FAILED_UNLOAD).
+
+    Regression: with only the LOADED filter (and no `if unloaded` guard), a
+    FAILED_UNLOAD entry is excluded from `remaining` and the service would be
+    removed even though platforms may still be running.
+    """
+    entry = _make_entry()
+    entry.add_to_hass(hass)
+    with patch(
+        "custom_components.rusty.coordinator.RustyClient.async_state",
+        return_value=STATE_BODY,
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    assert hass.services.has_service(DOMAIN, "announce")
+
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_unload_platforms",
+        return_value=False,
+    ):
+        ok = await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert ok is False
+    # Unload failed — service must stay registered (platforms still running)
+    assert hass.services.has_service(DOMAIN, "announce")
+
+
+async def test_announce_to_failed_unload_entry_raises_validation_error(hass):
+    """After FAILED_UNLOAD, routing to that entry's coordinator is blocked.
+
+    _coordinator_for_rusty_id only considers LOADED entries; a FAILED_UNLOAD
+    entry with persistent runtime_data is ignored.
+    Regression: baseline routing would find the coordinator and call the device.
+    """
+    from homeassistant.exceptions import ServiceValidationError
+
+    entry = _make_entry()
+    entry.add_to_hass(hass)
+    with patch(
+        "custom_components.rusty.coordinator.RustyClient.async_state",
+        return_value=STATE_BODY,
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    device_reg = dr.async_get(hass)
+    ha_dev = device_reg.async_get_device_by_identifier((DOMAIN, DEVICE_ID), entry.entry_id)
+    assert ha_dev is not None
+
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_unload_platforms",
+        return_value=False,
+    ):
+        ok = await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+    assert ok is False
+    # runtime_data persists in FAILED_UNLOAD (EXP-1c verified this behavior)
+    assert hasattr(entry, "runtime_data")
+
+    announce_calls: list[str] = []
+
+    async def mock_announce(text: str) -> None:
+        announce_calls.append(text)
+
+    with patch("custom_components.rusty.api.RustyClient.async_announce", side_effect=mock_announce):
+        with pytest.raises((ServiceValidationError, HomeAssistantError)):
+            await hass.services.async_call(
+                DOMAIN,
+                "announce",
+                {"device_id": ha_dev.id, "text": "should not play"},
+                blocking=True,
+            )
+
+    # Coordinator routing was blocked — device was never called
+    assert announce_calls == []
