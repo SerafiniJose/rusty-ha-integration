@@ -499,8 +499,6 @@ async def test_ensure_foreground_connection_error_propagates_panel_not_called(ha
     body = {**STATE_BODY_WITH_PANEL, "app": {"foreground": False, "canBringForward": True}}
     await _setup(hass, body)
 
-    panel_calls: list[str] = []
-
     with (
         patch(
             "custom_components.rusty.api.RustyClient.async_set_foreground",
@@ -508,7 +506,7 @@ async def test_ensure_foreground_connection_error_propagates_panel_not_called(ha
         ),
         patch(
             "custom_components.rusty.api.RustyClient.async_set_panel",
-            side_effect=lambda w: panel_calls.append(w),
+            side_effect=AssertionError("panel must not be called after foreground error"),
         ),
         patch("custom_components.rusty.coordinator.RustyClient.async_state", return_value=body),
     ):
@@ -518,8 +516,6 @@ async def test_ensure_foreground_connection_error_propagates_panel_not_called(ha
                 {"entity_id": ENTITY_ID, "option": "Spotify"},
                 blocking=True,
             )
-
-    assert panel_calls == []  # error from foreground propagated; panel never reached
 
 
 async def test_ensure_foreground_409_propagates_no_extra_panel_retry(hass):
@@ -531,8 +527,6 @@ async def test_ensure_foreground_409_propagates_no_extra_panel_retry(hass):
     body = {**STATE_BODY_WITH_PANEL, "app": {"foreground": False, "canBringForward": True}}
     await _setup(hass, body)
 
-    panel_calls: list[str] = []
-
     with (
         patch(
             "custom_components.rusty.api.RustyClient.async_set_foreground",
@@ -540,7 +534,7 @@ async def test_ensure_foreground_409_propagates_no_extra_panel_retry(hass):
         ),
         patch(
             "custom_components.rusty.api.RustyClient.async_set_panel",
-            side_effect=lambda w: panel_calls.append(w),
+            side_effect=AssertionError("panel must not be called after foreground error"),
         ),
         patch("custom_components.rusty.coordinator.RustyClient.async_state", return_value=body),
     ):
@@ -550,8 +544,6 @@ async def test_ensure_foreground_409_propagates_no_extra_panel_retry(hass):
                 {"entity_id": ENTITY_ID, "option": "Spotify"},
                 blocking=True,
             )
-
-    assert panel_calls == []  # no extra panel call; error propagated from foreground
 
 
 async def test_ensure_foreground_auth_error_propagates(hass):
@@ -563,8 +555,6 @@ async def test_ensure_foreground_auth_error_propagates(hass):
     body = {**STATE_BODY_WITH_PANEL, "app": {"foreground": False, "canBringForward": True}}
     await _setup(hass, body)
 
-    panel_calls: list[str] = []
-
     with (
         patch(
             "custom_components.rusty.api.RustyClient.async_set_foreground",
@@ -572,7 +562,7 @@ async def test_ensure_foreground_auth_error_propagates(hass):
         ),
         patch(
             "custom_components.rusty.api.RustyClient.async_set_panel",
-            side_effect=lambda w: panel_calls.append(w),
+            side_effect=AssertionError("panel must not be called after foreground error"),
         ),
         patch("custom_components.rusty.coordinator.RustyClient.async_state", return_value=body),
     ):
@@ -582,5 +572,3 @@ async def test_ensure_foreground_auth_error_propagates(hass):
                 {"entity_id": ENTITY_ID, "option": "Spotify"},
                 blocking=True,
             )
-
-    assert panel_calls == []  # auth error propagated; no navigation attempt
