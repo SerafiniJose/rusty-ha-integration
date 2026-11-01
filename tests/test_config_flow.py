@@ -179,7 +179,10 @@ async def test_zeroconf_uses_the_advertised_port(hass):
         "custom_components.rusty.config_flow.RustyConfigFlow._async_probe",
         new_callable=AsyncMock,
         return_value=STATE_BODY,
-    ) as mock_probe:
+    ) as mock_probe, patch(
+        "custom_components.rusty.coordinator.RustyClient.async_state",
+        return_value=STATE_BODY,
+    ):
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": config_entries.SOURCE_ZEROCONF},
@@ -507,6 +510,9 @@ async def test_reauth_confirm_updates_password_and_reloads(hass):
     with patch(
         "custom_components.rusty.config_flow.RustyConfigFlow._async_probe",
         new_callable=AsyncMock,
+        return_value=STATE_BODY,
+    ), patch(
+        "custom_components.rusty.coordinator.RustyClient.async_state",
         return_value=STATE_BODY,
     ):
         result = await hass.config_entries.flow.async_configure(

@@ -66,6 +66,9 @@ async def test_state_reflects_screen_on_and_brightness(hass):
     assert state.state == STATE_ON
     # device brightness 80 -> round(80 * 255 / 100) = 204
     assert state.attributes["brightness"] == 204
+    # diagnostic attributes always present
+    assert state.attributes["system_available"] is True
+    assert state.attributes["writable"] is True
 
 
 async def test_brightness_rounding_lower_edge(hass):
@@ -358,13 +361,16 @@ async def test_unavailable_when_coordinator_update_fails(hass):
     assert state.state == "unavailable"
 
 
-async def test_unavailable_when_screen_available_false(hass):
-    """screen.available = false makes the light entity unavailable."""
+async def test_available_when_screen_available_false(hass):
+    """screen.available=False means system-managed brightness, not uncontrollable.
+    The entity must remain available and expose system_available=False as an attribute.
+    """
     body = {**STATE_BODY, "screen": {**STATE_BODY["screen"], "available": False}}
     await _setup(hass, body)
 
     state = hass.states.get(ENTITY_ID)
-    assert state.state == "unavailable"
+    assert state.state != "unavailable"
+    assert state.attributes["system_available"] is False
 
 
 async def test_turn_on_succeeds_when_screen_not_writable(hass):

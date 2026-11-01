@@ -50,7 +50,7 @@ async def test_setup_entry_success_creates_device(hass):
     assert entry.state is ConfigEntryState.LOADED
 
     device_registry = dr.async_get(hass)
-    device = device_registry.async_get_device(identifiers={(DOMAIN, DEVICE_ID)})
+    device = device_registry.async_get_device_by_identifier((DOMAIN, DEVICE_ID), entry.entry_id)
     assert device is not None
     assert device.name == DEVICE_NAME
     assert device.sw_version == "2.3.0"
@@ -398,7 +398,7 @@ async def test_announce_service_routes_to_correct_device(hass):
 
     # Resolve HA device UUID for device 2.
     device_reg = dr.async_get(hass)
-    ha_dev2 = device_reg.async_get_device(identifiers={(DOMAIN, DEVICE_ID_2)})
+    ha_dev2 = device_reg.async_get_device_by_identifier((DOMAIN, DEVICE_ID_2), entry2.entry_id)
     assert ha_dev2 is not None, "device 2 must be registered"
 
     with patch.object(entry2.runtime_data.client, "async_announce", _mock_announce):
@@ -453,7 +453,7 @@ async def test_announce_service_api_error_raises_homeassistant_error(hass):
 
     # Resolve HA device UUID.
     device_reg = dr.async_get(hass)
-    ha_dev = device_reg.async_get_device(identifiers={(DOMAIN, DEVICE_ID)})
+    ha_dev = device_reg.async_get_device_by_identifier((DOMAIN, DEVICE_ID), entry.entry_id)
     assert ha_dev is not None
 
     with patch(
@@ -510,7 +510,7 @@ async def test_setup_entry_registers_serial_number(hass):
         await hass.async_block_till_done()
 
     device_registry = dr.async_get(hass)
-    device = device_registry.async_get_device(identifiers={(DOMAIN, DEVICE_ID)})
+    device = device_registry.async_get_device_by_identifier((DOMAIN, DEVICE_ID), entry.entry_id)
     assert device is not None
     assert device.serial_number == DEVICE_ID
 

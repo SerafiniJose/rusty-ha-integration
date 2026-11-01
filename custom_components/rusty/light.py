@@ -46,8 +46,19 @@ class RustyScreenLight(RustyEntity, LightEntity):
 
     @property
     def available(self) -> bool:
-        """Unavailable when the coordinator has no good data or screen is not available."""
-        return super().available and self.coordinator.data["screen"]["available"]
+        """Unavailable only when the coordinator has no good data.
+
+        screen.available=False means Android's system brightness channel is not
+        owned by Rusty (mode='system'), but POST /api/screen still accepts on/off
+        and brightness commands — the device controls the screen regardless.
+        """
+        return super().available
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Expose screen.available and screen.writable for diagnostics."""
+        s = self.coordinator.data["screen"]
+        return {"system_available": s["available"], "writable": s["writable"]}
 
     @property
     def is_on(self) -> bool:

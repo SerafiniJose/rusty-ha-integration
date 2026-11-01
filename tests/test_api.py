@@ -1,9 +1,12 @@
 """Tests for the Rusty aiohttp API client."""
 from __future__ import annotations
 
+import json as _json
+from typing import Any
+from unittest.mock import patch
+
 import aiohttp
 import pytest
-from aioresponses import aioresponses
 
 from custom_components.rusty.api import (
     RustyApiError,
@@ -25,12 +28,105 @@ STATE_BODY = {
     "slideshow": {"enabled": False},
 }
 
+# ---------------------------------------------------------------------------
+# Minimal aiohttp mock (replaces aioresponses for aiohttp 3.14+ compatibility)
+# ---------------------------------------------------------------------------
+
+class _MockRequest:
+    """Recorded request for post-call inspection."""
+    def __init__(self, method: str, url: str, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+        self._method = method
+        self._url = url
+
+
+class _FakeResponse:
+    """Minimal async-context-manager response compatible with api.py's usage."""
+    def __init__(self, status: int, body: str) -> None:
+        self.status = status
+        self._body = body
+
+    async def text(self) -> str:
+        return self._body
+
+    async def __aenter__(self) -> "_FakeResponse":
+        return self
+
+    async def __aexit__(self, *_: Any) -> bool:
+        return False
+
+
+class MockAiohttp:
+    """Lightweight aioresponses replacement; responses registered per (METHOD, url)."""
+
+    def __init__(self) -> None:
+        self._responses: dict[tuple[str, str], list] = {}
+        self.requests: dict[tuple[str, str], list[_MockRequest]] = {}
+        self._patcher = None
+
+    def _register(
+        self,
+        method: str,
+        url: str,
+        *,
+        payload: dict | None = None,
+        body: str | None = None,
+        status: int = 200,
+        content_type: str = "application/json",
+        exception: BaseException | None = None,
+    ) -> None:
+        key = (method.upper(), url)
+        if exception is not None:
+            entry = ("exc", exception)
+        else:
+            raw = _json.dumps(payload) if payload is not None else (body or "")
+            entry = ("resp", _FakeResponse(status, raw))
+        self._responses.setdefault(key, []).append(entry)
+
+    def get(self, url: str, **kw: Any) -> None:
+        self._register("GET", url, **kw)
+
+    def post(self, url: str, **kw: Any) -> None:
+        self._register("POST", url, **kw)
+
+    def __enter__(self) -> "MockAiohttp":
+        def _fake_request(method: str, url: Any, **kwargs: Any) -> Any:
+            url_str = str(url)
+            key = (method.upper(), url_str)
+            rec = _MockRequest(method, url_str, **kwargs)
+            self.requests.setdefault(key, []).append(rec)
+
+            entries = self._responses.get(key, [])
+            if not entries:
+                raise RuntimeError(f"No mock response for {method} {url_str}")
+            kind, value = entries.pop(0)
+            if not entries:  # keep last response in place (aioresponses behaviour)
+                self._responses[key] = [(kind, value)]
+
+            if kind == "exc":
+                raise value  # type: ignore[misc]
+            return value
+
+        self._patcher = patch.object(
+            aiohttp.ClientSession, "request", side_effect=_fake_request
+        )
+        self._patcher.start()
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        if self._patcher:
+            self._patcher.stop()
+
 
 @pytest.fixture
 def mock_aioresponse():
-    with aioresponses() as m:
+    with MockAiohttp() as m:
         yield m
 
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
 
 async def test_async_state_round_trip(mock_aioresponse):
     """GET /api/state returns the parsed JSON body as a dict."""
@@ -52,7 +148,7 @@ async def test_async_set_screen_on_posts_on_and_brightness(mock_aioresponse):
         result = await client.async_set_screen(True, 55)
 
     assert result == STATE_BODY
-    key = ("POST", aiohttp.client.URL(f"{BASE_URL}/api/screen"))
+    key = ("POST", f"{BASE_URL}/api/screen")
     request = mock_aioresponse.requests[key][-1]
     assert request.kwargs["json"] == {"on": True, "brightness": 55}
 
@@ -66,19 +162,14 @@ async def test_async_set_screen_off_omits_brightness(mock_aioresponse):
         result = await client.async_set_screen(False)
 
     assert result == STATE_BODY
-    key = ("POST", aiohttp.client.URL(f"{BASE_URL}/api/screen"))
+    key = ("POST", f"{BASE_URL}/api/screen")
     request = mock_aioresponse.requests[key][-1]
     assert request.kwargs["json"] == {"on": False}
     assert "brightness" not in request.kwargs["json"]
 
 
 async def test_async_set_volume_409_raises_volume_fixed_error(mock_aioresponse):
-    """A 409 response from /api/volume raises RustyVolumeFixedError.
-
-    The 409 -> "volume is fixed" translation lives in async_set_volume, so this
-    is asserted through the public volume call, not through the generic
-    transport.
-    """
+    """A 409 response from /api/volume raises RustyVolumeFixedError."""
     mock_aioresponse.post(
         f"{BASE_URL}/api/volume",
         payload={"error": "volume is fixed"},
@@ -90,7 +181,6 @@ async def test_async_set_volume_409_raises_volume_fixed_error(mock_aioresponse):
         with pytest.raises(RustyVolumeFixedError) as excinfo:
             await client.async_set_volume(50)
 
-    # The `{"error": ...}` envelope is unwrapped, not shown raw to the user.
     assert str(excinfo.value) == "volume is fixed"
 
 
@@ -250,14 +340,14 @@ async def test_auth_error_is_api_error_subclass(mock_aioresponse):
 
 
 async def test_bearer_token_sent_when_password_set(mock_aioresponse):
-    """When a password is configured, every request carries Authorization: Bearer."""
+    """When a password is configured, every request carries Authorization: Bearer ***"""
     mock_aioresponse.get(f"{BASE_URL}/api/state", payload=STATE_BODY, status=200)
 
     async with aiohttp.ClientSession() as session:
         client = RustyClient(HOST, session, password="s3cr3t")
         await client.async_state()
 
-    key = ("GET", aiohttp.client.URL(f"{BASE_URL}/api/state"))
+    key = ("GET", f"{BASE_URL}/api/state")
     req = mock_aioresponse.requests[key][-1]
     assert req.kwargs.get("headers", {}).get("Authorization") == "Bearer s3cr3t"
 
@@ -270,7 +360,7 @@ async def test_no_auth_header_when_no_password(mock_aioresponse):
         client = RustyClient(HOST, session)
         await client.async_state()
 
-    key = ("GET", aiohttp.client.URL(f"{BASE_URL}/api/state"))
+    key = ("GET", f"{BASE_URL}/api/state")
     req = mock_aioresponse.requests[key][-1]
     assert "Authorization" not in (req.kwargs.get("headers") or {})
 
@@ -300,7 +390,7 @@ async def test_announce_posts_text(mock_aioresponse):
         client = RustyClient(HOST, session)
         await client.async_announce("say this")
 
-    key = ("POST", aiohttp.client.URL(f"{BASE_URL}/api/announce/text"))
+    key = ("POST", f"{BASE_URL}/api/announce/text")
     req = mock_aioresponse.requests[key][-1]
     assert req.kwargs["json"] == {"text": "say this"}
 
