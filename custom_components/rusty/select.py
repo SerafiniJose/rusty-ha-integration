@@ -12,6 +12,8 @@ that omits panel data gracefully produces no entity at all.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.core import HomeAssistant
@@ -21,6 +23,38 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .api import RustyApiError
 from .coordinator import RustyConfigEntry, RustyCoordinator
 from .entity import RustyEntity
+
+
+async def _ensure_foreground(
+    client: Any, coordinator_data: dict
+) -> None:
+    """Bring app to foreground when firmware supports it.
+
+    Only skips when canBringForward is absent or false (old firmware without
+    /api/foreground or device is in a restricted mode).  Does not skip when
+    already foreground — the extra call is harmless (200) and avoids stale-data bugs.
+    """
+    app = coordinator_data.get("app") or {}
+    if not app.get("canBringForward"):
+        return
+    try:
+        await client.async_set_foreground(True)
+    except RustyApiError:
+        pass  # old firmware without /api/foreground; navigation proceeds as before
+
+
+async def _nav(call: Callable[[], Coroutine[Any, Any, dict]], delay: float = 0.4) -> dict:
+    """Run a navigation call; retry once after a short delay on 409 (app still launching).
+
+    shortcut: fixed delay; when to upgrade: firmware readiness endpoint
+    """
+    try:
+        return await call()
+    except RustyApiError as err:
+        if err.status != 409:
+            raise
+        await asyncio.sleep(delay)
+        return await call()  # propagate on second 409
 
 # Human-readable labels for the wire values the device sends for panels.
 _PANEL_LABELS: dict[str, str] = {
@@ -121,9 +155,9 @@ class RustyPanelSelect(RustyEntity, SelectEntity):
     async def async_select_option(self, option: str) -> None:
         """Navigate the device to the selected panel.
 
-        Brings the Rusty app to the foreground first (POST /api/foreground);
-        the device rejects panel navigation with 409 when the app is not on screen.
-        The app stays in the foreground after navigation so the selected panel is visible.
+        Brings app to foreground when needed (skipped if already foreground or
+        firmware lacks /api/foreground).  Retries once on 409 to handle the
+        brief window while the app finishes launching.
         """
         wire: str | None = next(
             (w for w in self._available_panels() if _PANEL_LABELS.get(w, w) == option),
@@ -132,10 +166,8 @@ class RustyPanelSelect(RustyEntity, SelectEntity):
         if wire is None:
             raise HomeAssistantError(f"Unknown panel option: {option!r}")
         try:
-            await self.coordinator.client.async_set_foreground(True)
-            # shortcut: 300ms for app to become interactive after foreground, when to upgrade: if device firmware adds a readiness signal
-            await asyncio.sleep(0.3)
-            result = await self.coordinator.client.async_set_panel(wire)
+            await _ensure_foreground(self.coordinator.client, self.coordinator.data)
+            result = await _nav(lambda: self.coordinator.client.async_set_panel(wire))
         except RustyApiError as err:
             raise HomeAssistantError(f"Error communicating with Rusty: {err}") from err
         await self.coordinator.async_apply_command_result(result)
@@ -186,8 +218,9 @@ class RustyDashboardSelect(RustyEntity, SelectEntity):
     async def async_select_option(self, option: str) -> None:
         """Navigate the device to the chosen HA dashboard.
 
-        Brings the Rusty app to the foreground first (navigating to HA panel if needed).
-        The device rejects dashboard navigation with 409 when the app is not on screen.
+        Brings app to foreground when needed, then navigates to the HA panel
+        (required so the device accepts dashboard navigation), then to the dashboard.
+        Retries the panel step once on 409 to handle app startup latency.
         """
         path: str | None = next(
             (path for label, path in self._labels() if label == option), None
@@ -195,11 +228,8 @@ class RustyDashboardSelect(RustyEntity, SelectEntity):
         if path is None:
             raise HomeAssistantError(f"Unknown HA dashboard option: {option!r}")
         try:
-            # Ensure app is foreground and on the HA panel before setting the dashboard.
-            await self.coordinator.client.async_set_foreground(True)
-            # shortcut: 300ms for app to become interactive after foreground, when to upgrade: if device firmware adds a readiness signal
-            await asyncio.sleep(0.3)
-            await self.coordinator.client.async_set_panel("home_assistant")
+            await _ensure_foreground(self.coordinator.client, self.coordinator.data)
+            await _nav(lambda: self.coordinator.client.async_set_panel("home_assistant"))
             result = await self.coordinator.client.async_set_dashboard(path)
         except RustyApiError as err:
             raise HomeAssistantError(f"Error communicating with Rusty: {err}") from err

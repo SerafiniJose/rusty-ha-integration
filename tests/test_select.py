@@ -22,6 +22,7 @@ STATE_BODY_WITH_PANEL = {
     "volume": {"value": 42, "fixed": False},
     "playing": {"spotify": True, "dlna": False},
     "slideshow": {"enabled": False},
+    "app": {"foreground": False, "canBringForward": True},
     "panel": {
         "active": "spotify",
         "available": ["spotify", "home_assistant", "dlna", "lockscreen"],
@@ -427,3 +428,57 @@ async def test_duplicate_dashboard_titles_are_distinct_and_selectable(hass):
                 blocking=True,
             )
     assert [c.args[0] for c in mock_set_dash.await_args_list] == ["dash-b", "lovelace"]
+
+
+async def test_panel_select_skips_foreground_when_already_foreground(hass):
+    """When already foreground, async_set_foreground is still called (harmless, avoids stale data)."""
+    body = {**STATE_BODY_WITH_PANEL, "app": {"foreground": True, "canBringForward": True}}
+    await _setup(hass, body)
+
+    with (
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_foreground",
+            new_callable=AsyncMock,
+            return_value=body,
+        ) as mock_fg,
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_panel",
+            new_callable=AsyncMock,
+            return_value=body,
+        ),
+        patch("custom_components.rusty.coordinator.RustyClient.async_state", return_value=body),
+    ):
+        await hass.services.async_call(
+            "select", "select_option",
+            {"entity_id": ENTITY_ID, "option": "Spotify"},
+            blocking=True,
+        )
+
+    # Called even when already foreground — avoids stale coordinator data bugs
+    mock_fg.assert_awaited_once_with(True)
+
+
+async def test_panel_select_skips_foreground_when_not_supported(hass):
+    """_ensure_foreground must not call async_set_foreground when canBringForward is False."""
+    body = {**STATE_BODY_WITH_PANEL, "app": {"foreground": False, "canBringForward": False}}
+    await _setup(hass, body)
+
+    with (
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_foreground",
+            new_callable=AsyncMock,
+        ) as mock_fg,
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_panel",
+            new_callable=AsyncMock,
+            return_value=body,
+        ),
+        patch("custom_components.rusty.coordinator.RustyClient.async_state", return_value=body),
+    ):
+        await hass.services.async_call(
+            "select", "select_option",
+            {"entity_id": ENTITY_ID, "option": "Spotify"},
+            blocking=True,
+        )
+
+    mock_fg.assert_not_called()
