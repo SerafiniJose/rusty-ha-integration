@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import voluptuous as vol
 
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
@@ -26,7 +27,7 @@ PLATFORMS: list[Platform | str] = [
 _ANNOUNCE_SCHEMA = vol.Schema(
     {
         vol.Required("device_id"): cv.string,
-        vol.Required("text"): vol.All(cv.string, vol.Length(min=1, max=4000)),
+        vol.Required("text"): vol.All(cv.string, str.strip, vol.Length(min=1, max=4000)),
     }
 )
 
@@ -126,10 +127,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: RustyConfigEntry) -> boo
 async def async_unload_entry(hass: HomeAssistant, entry: RustyConfigEntry) -> bool:
     """Unload a Rusty config entry."""
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    # Remove the service only when the last entry is gone.
+    # Remove the service only when no LOADED entries remain; SETUP_RETRY entries
+    # don't have a functioning coordinator and don't count.
     remaining = [
         e for e in hass.config_entries.async_entries(DOMAIN)
         if e.entry_id != entry.entry_id
+        and e.state is ConfigEntryState.LOADED
     ]
     if not remaining:
         hass.services.async_remove(DOMAIN, _ANNOUNCE_SERVICE)

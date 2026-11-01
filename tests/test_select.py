@@ -8,7 +8,8 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_HOST, CONF_PORT
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.rusty.api import RustyApiError
+from custom_components.rusty.api import RustyApiError, RustyAuthError, RustyConnectionError
+from homeassistant.exceptions import HomeAssistantError
 from custom_components.rusty.const import DEFAULT_PORT, DOMAIN
 
 HOST = "192.168.7.116"
@@ -430,7 +431,7 @@ async def test_duplicate_dashboard_titles_are_distinct_and_selectable(hass):
     assert [c.args[0] for c in mock_set_dash.await_args_list] == ["dash-b", "lovelace"]
 
 
-async def test_panel_select_skips_foreground_when_already_foreground(hass):
+async def test_panel_select_calls_foreground_even_when_already_foreground(hass):
     """When already foreground, async_set_foreground is still called (harmless, avoids stale data)."""
     body = {**STATE_BODY_WITH_PANEL, "app": {"foreground": True, "canBringForward": True}}
     await _setup(hass, body)
@@ -482,3 +483,104 @@ async def test_panel_select_skips_foreground_when_not_supported(hass):
         )
 
     mock_fg.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Regression tests — hallazgo 1: _ensure_foreground errors must propagate
+# ---------------------------------------------------------------------------
+
+
+async def test_ensure_foreground_connection_error_propagates_panel_not_called(hass):
+    """RustyConnectionError from foreground propagates; panel is never called.
+
+    Regression: before fix, the error was swallowed and panel was called once
+    (EXP-2a in the ponytail audit).
+    """
+    body = {**STATE_BODY_WITH_PANEL, "app": {"foreground": False, "canBringForward": True}}
+    await _setup(hass, body)
+
+    panel_calls: list[str] = []
+
+    with (
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_foreground",
+            side_effect=RustyConnectionError("network timeout"),
+        ),
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_panel",
+            side_effect=lambda w: panel_calls.append(w),
+        ),
+        patch("custom_components.rusty.coordinator.RustyClient.async_state", return_value=body),
+    ):
+        with pytest.raises(HomeAssistantError, match="Error communicating with Rusty"):
+            await hass.services.async_call(
+                "select", "select_option",
+                {"entity_id": ENTITY_ID, "option": "Spotify"},
+                blocking=True,
+            )
+
+    assert panel_calls == []  # error from foreground propagated; panel never reached
+
+
+async def test_ensure_foreground_409_propagates_no_extra_panel_retry(hass):
+    """409 from foreground propagates immediately; panel is not called at all.
+
+    Regression: before fix, the 409 was swallowed, then panel was called twice
+    (first attempt + _nav retry) adding 0.4 s latency (EXP-2b in the audit).
+    """
+    body = {**STATE_BODY_WITH_PANEL, "app": {"foreground": False, "canBringForward": True}}
+    await _setup(hass, body)
+
+    panel_calls: list[str] = []
+
+    with (
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_foreground",
+            side_effect=RustyApiError("Display over other apps permission required", status=409),
+        ),
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_panel",
+            side_effect=lambda w: panel_calls.append(w),
+        ),
+        patch("custom_components.rusty.coordinator.RustyClient.async_state", return_value=body),
+    ):
+        with pytest.raises(HomeAssistantError, match="Error communicating with Rusty"):
+            await hass.services.async_call(
+                "select", "select_option",
+                {"entity_id": ENTITY_ID, "option": "Spotify"},
+                blocking=True,
+            )
+
+    assert panel_calls == []  # no extra panel call; error propagated from foreground
+
+
+async def test_ensure_foreground_auth_error_propagates(hass):
+    """RustyAuthError from foreground raises HomeAssistantError; navigation does not proceed.
+
+    Regression: before fix, the 401 was silently swallowed and navigation continued
+    (EXP-2c in the ponytail audit).
+    """
+    body = {**STATE_BODY_WITH_PANEL, "app": {"foreground": False, "canBringForward": True}}
+    await _setup(hass, body)
+
+    panel_calls: list[str] = []
+
+    with (
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_foreground",
+            side_effect=RustyAuthError("password required", status=401),
+        ),
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_panel",
+            side_effect=lambda w: panel_calls.append(w),
+        ),
+        patch("custom_components.rusty.coordinator.RustyClient.async_state", return_value=body),
+    ):
+        with pytest.raises(HomeAssistantError, match="Error communicating with Rusty"):
+            await hass.services.async_call(
+                "select", "select_option",
+                {"entity_id": ENTITY_ID, "option": "Spotify"},
+                blocking=True,
+            )
+
+    assert panel_calls == []  # auth error propagated; no navigation attempt

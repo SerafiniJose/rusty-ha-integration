@@ -30,17 +30,13 @@ async def _ensure_foreground(
 ) -> None:
     """Bring app to foreground when firmware supports it.
 
-    Only skips when canBringForward is absent or false (old firmware without
-    /api/foreground or device is in a restricted mode).  Does not skip when
-    already foreground — the extra call is harmless (200) and avoids stale-data bugs.
+    Skips when canBringForward is absent or false (old firmware or restricted mode).
+    Errors propagate — canBringForward=True means the endpoint exists; any error is real.
     """
     app = coordinator_data.get("app") or {}
     if not app.get("canBringForward"):
         return
-    try:
-        await client.async_set_foreground(True)
-    except RustyApiError:
-        pass  # old firmware without /api/foreground; navigation proceeds as before
+    await client.async_set_foreground(True)
 
 
 async def _nav(call: Callable[[], Coroutine[Any, Any, dict]], delay: float = 0.4) -> dict:

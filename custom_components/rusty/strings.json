@@ -15,7 +15,7 @@
       },
       "rediscovery_confirm": {
         "title": "Rusty device moved",
-        "description": "The Rusty device `{name}` was found at a new address (`{host}`), previously at `{old_host}`). Enter the API password to verify the device's identity, then confirm to update the stored address.",
+        "description": "The Rusty device `{name}` was found at a new address (`{host}`), previously at `{old_host}`. Enter the API password to verify the device's identity, then confirm to update the stored address.",
         "data": {
           "password": "API password"
         }

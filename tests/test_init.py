@@ -278,6 +278,8 @@ async def test_device_missing_id_during_refresh_marks_update_failed(hass):
         {**STATE_BODY, "volume": {"value": 101, "fixed": False}},
         # playing.spotify not a bool
         {**STATE_BODY, "playing": {"spotify": 1, "dlna": False}},
+        # screen.on not a bool
+        {**STATE_BODY, "screen": {**STATE_BODY["screen"], "on": 1}},
     ],
 )
 async def test_type_validation_rejects_bad_values(hass, malformed_body):
@@ -535,3 +537,187 @@ async def test_coordinator_401_starts_reauth_flow(hass):
     assert any(
         f["context"]["source"] == ce.SOURCE_REAUTH for f in flows
     ), "Expected a reauth flow to be started"
+
+
+# ---------------------------------------------------------------------------
+# Regression tests — hallazgo 3: announce schema rejects whitespace-only text
+# ---------------------------------------------------------------------------
+
+
+async def _setup_and_get_ha_device(hass):
+    """Helper: load one entry and return the HA device object."""
+    entry = _make_entry()
+    entry.add_to_hass(hass)
+    with patch(
+        "custom_components.rusty.coordinator.RustyClient.async_state",
+        return_value=STATE_BODY,
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    device_reg = dr.async_get(hass)
+    return device_reg.async_get_device_by_identifier((DOMAIN, DEVICE_ID), entry.entry_id)
+
+
+async def test_announce_whitespace_text_rejected_before_device(hass):
+    """Whitespace-only text is rejected by the schema (stripped length < 1).
+
+    Regression: before fix, '   ' passed vol.Length(min=1) and reached the device,
+    which returned HTTP 400 'text must not be blank' (EXP-4 in the ponytail audit).
+    After fix, the schema strips and validates; no HTTP call is made.
+    """
+    ha_dev = await _setup_and_get_ha_device(hass)
+    assert ha_dev is not None
+
+    device_calls: list[str] = []
+
+    async def mock_announce(text: str) -> None:
+        device_calls.append(text)
+
+    with patch("custom_components.rusty.api.RustyClient.async_announce", side_effect=mock_announce):
+        with pytest.raises(Exception):  # voluptuous.Invalid or HA wraps it
+            await hass.services.async_call(
+                DOMAIN,
+                "announce",
+                {"device_id": ha_dev.id, "text": "   "},
+                blocking=True,
+            )
+
+    assert device_calls == []  # device never called; schema rejected the call
+
+
+async def test_announce_leading_trailing_whitespace_stripped(hass):
+    """Text with leading/trailing whitespace is stripped before being sent to the device."""
+    ha_dev = await _setup_and_get_ha_device(hass)
+    assert ha_dev is not None
+
+    sent: list[str] = []
+
+    async def mock_announce(text: str) -> None:
+        sent.append(text)
+
+    with patch("custom_components.rusty.api.RustyClient.async_announce", side_effect=mock_announce):
+        await hass.services.async_call(
+            DOMAIN,
+            "announce",
+            {"device_id": ha_dev.id, "text": "  hello\nworld  "},
+            blocking=True,
+        )
+
+    assert sent == ["hello\nworld"]  # stripped; internal newline preserved
+
+
+async def test_announce_text_at_4000_char_limit_accepted(hass):
+    """Text of exactly 4000 chars (after stripping) is accepted."""
+    ha_dev = await _setup_and_get_ha_device(hass)
+    assert ha_dev is not None
+
+    sent: list[str] = []
+
+    async def mock_announce(text: str) -> None:
+        sent.append(text)
+
+    with patch("custom_components.rusty.api.RustyClient.async_announce", side_effect=mock_announce):
+        await hass.services.async_call(
+            DOMAIN,
+            "announce",
+            {"device_id": ha_dev.id, "text": "x" * 4000},
+            blocking=True,
+        )
+
+    assert len(sent) == 1 and len(sent[0]) == 4000
+
+
+# ---------------------------------------------------------------------------
+# Regression tests — hallazgo 4: remaining entries filter for LOADED state
+# ---------------------------------------------------------------------------
+
+
+async def test_announce_service_removed_when_no_loaded_entries_remain(hass):
+    """Service is removed when the last LOADED entry unloads; SETUP_RETRY entries don't count.
+
+    Regression: before fix, a SETUP_RETRY entry kept the service registered even
+    though it had no functioning coordinator.
+    """
+    entry1 = _make_entry()
+    entry2 = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=DEVICE_ID_2,
+        data={CONF_HOST: HOST_2, CONF_PORT: DEFAULT_PORT},
+        title=DEVICE_NAME_2,
+    )
+
+    entry1.add_to_hass(hass)
+    with patch(
+        "custom_components.rusty.coordinator.RustyClient.async_state",
+        return_value=STATE_BODY,
+    ):
+        await hass.config_entries.async_setup(entry1.entry_id)
+        await hass.async_block_till_done()
+    assert entry1.state is ConfigEntryState.LOADED
+
+    entry2.add_to_hass(hass)
+    with patch(
+        "custom_components.rusty.coordinator.RustyClient.async_state",
+        side_effect=RustyConnectionError("device offline"),
+    ):
+        await hass.config_entries.async_setup(entry2.entry_id)
+        await hass.async_block_till_done()
+    assert entry2.state is ConfigEntryState.SETUP_RETRY
+
+    assert hass.services.has_service(DOMAIN, "announce")
+
+    await hass.config_entries.async_unload(entry1.entry_id)
+    await hass.async_block_till_done()
+
+    # Only a SETUP_RETRY entry remains — service must be removed
+    assert not hass.services.has_service(DOMAIN, "announce")
+
+
+# ---------------------------------------------------------------------------
+# Regression tests — hallazgo 7: concurrent command snapshots / reconciliation
+# ---------------------------------------------------------------------------
+
+
+async def test_concurrent_command_results_stale_state_corrected_by_poll(hass):
+    """Out-of-order command snapshots may leave stale state; the next poll corrects it.
+
+    Demonstrates the bounded stale window and verifies that coordinator.async_refresh()
+    restores ground truth. Regression pin for concurrent-command behavior.
+    """
+    import asyncio
+
+    entry = _make_entry()
+    entry.add_to_hass(hass)
+    with patch(
+        "custom_components.rusty.coordinator.RustyClient.async_state",
+        return_value=STATE_BODY,
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    coordinator = entry.runtime_data
+
+    state_vol_55 = {**STATE_BODY, "volume": {"value": 55, "fixed": False}}
+    state_vol_70 = {**STATE_BODY, "volume": {"value": 70, "fixed": False}}
+
+    barrier = asyncio.Event()
+
+    async def apply_55_after_70():
+        await barrier.wait()
+        await coordinator.async_apply_command_result(state_vol_55)
+
+    async def apply_70_then_signal():
+        await coordinator.async_apply_command_result(state_vol_70)
+        barrier.set()
+
+    await asyncio.gather(apply_55_after_70(), apply_70_then_signal())
+    # The last completer (55) wins: stale state
+    assert coordinator.data["volume"]["value"] == 55
+
+    # Next poll reconciles to device ground truth (vol=70)
+    with patch(
+        "custom_components.rusty.coordinator.RustyClient.async_state",
+        return_value=state_vol_70,
+    ):
+        await coordinator.async_refresh()
+
+    assert coordinator.data["volume"]["value"] == 70  # corrected by poll
