@@ -103,11 +103,16 @@ async def test_panel_select_null_active_yields_unknown(hass):
 
 
 async def test_panel_select_calls_set_panel(hass):
-    """Selecting an option calls async_set_panel with the wire value."""
+    """Selecting an option calls async_set_foreground(True) then async_set_panel."""
     await _setup(hass)
 
     result_body = {**STATE_BODY_WITH_PANEL, "panel": {**STATE_BODY_WITH_PANEL["panel"], "active": "home_assistant"}}
     with (
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_foreground",
+            new_callable=AsyncMock,
+            return_value=result_body,
+        ) as mock_fg,
         patch(
             "custom_components.rusty.api.RustyClient.async_set_panel",
             new_callable=AsyncMock,
@@ -126,6 +131,7 @@ async def test_panel_select_calls_set_panel(hass):
         )
         await hass.async_block_till_done()
 
+    mock_fg.assert_awaited_once_with(True)
     mock_set_panel.assert_awaited_once_with("home_assistant")
 
 
@@ -135,10 +141,17 @@ async def test_panel_select_api_error_raises_ha_error(hass):
 
     await _setup(hass)
 
-    with patch(
-        "custom_components.rusty.api.RustyClient.async_set_panel",
-        new_callable=AsyncMock,
-        side_effect=RustyApiError("device unreachable"),
+    with (
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_foreground",
+            new_callable=AsyncMock,
+            return_value={**STATE_BODY_WITH_PANEL},
+        ),
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_panel",
+            new_callable=AsyncMock,
+            side_effect=RustyApiError("device unreachable"),
+        ),
     ):
         with pytest.raises(HomeAssistantError):
             await hass.services.async_call(
@@ -224,10 +237,20 @@ async def test_dashboard_select_null_active_yields_unknown(hass):
 
 
 async def test_dashboard_select_calls_set_dashboard(hass):
-    """Selecting a dashboard title calls async_set_dashboard with the path."""
+    """Selecting a dashboard calls async_set_foreground, async_set_panel, then async_set_dashboard."""
     await _setup(hass, STATE_WITH_DASHBOARDS)
 
     with (
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_foreground",
+            new_callable=AsyncMock,
+            return_value=STATE_WITH_DASHBOARDS,
+        ) as mock_fg,
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_panel",
+            new_callable=AsyncMock,
+            return_value=STATE_WITH_DASHBOARDS,
+        ) as mock_panel,
         patch(
             "custom_components.rusty.api.RustyClient.async_set_dashboard",
             new_callable=AsyncMock,
@@ -246,6 +269,8 @@ async def test_dashboard_select_calls_set_dashboard(hass):
         )
         await hass.async_block_till_done()
 
+    mock_fg.assert_awaited_once_with(True)
+    mock_panel.assert_awaited_once_with("home_assistant")
     mock_set_dash.assert_awaited_once_with("lovelace-cameras")
 
 
@@ -255,10 +280,22 @@ async def test_dashboard_select_api_error_raises_ha_error(hass):
 
     await _setup(hass, STATE_WITH_DASHBOARDS)
 
-    with patch(
-        "custom_components.rusty.api.RustyClient.async_set_dashboard",
-        new_callable=AsyncMock,
-        side_effect=RustyApiError("HA feature off"),
+    with (
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_foreground",
+            new_callable=AsyncMock,
+            return_value=STATE_WITH_DASHBOARDS,
+        ),
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_panel",
+            new_callable=AsyncMock,
+            return_value=STATE_WITH_DASHBOARDS,
+        ),
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_dashboard",
+            new_callable=AsyncMock,
+            side_effect=RustyApiError("HA feature off"),
+        ),
     ):
         with pytest.raises(HomeAssistantError):
             await hass.services.async_call(
@@ -365,11 +402,23 @@ async def test_duplicate_dashboard_titles_are_distinct_and_selectable(hass):
     assert s.attributes["options"] == ["Home (lovelace)", "Home (dash-b)", "cams"]
     assert s.state == "Home (dash-b)"
 
-    with patch(
-        "custom_components.rusty.api.RustyClient.async_set_dashboard",
-        new_callable=AsyncMock,
-        return_value=body,
-    ) as mock_set_dash:
+    with (
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_foreground",
+            new_callable=AsyncMock,
+            return_value=body,
+        ),
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_panel",
+            new_callable=AsyncMock,
+            return_value=body,
+        ),
+        patch(
+            "custom_components.rusty.api.RustyClient.async_set_dashboard",
+            new_callable=AsyncMock,
+            return_value=body,
+        ) as mock_set_dash,
+    ):
         for option in ("Home (dash-b)", "Home (lovelace)"):
             await hass.services.async_call(
                 "select",

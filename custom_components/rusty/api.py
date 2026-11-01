@@ -99,6 +99,8 @@ class RustyClient:
         """Navigate to a panel via POST /api/panel.
 
         Returns the resulting full state as a dict.
+        Raises RustyApiError (status 409) when the app is not in the foreground.
+        Call async_set_foreground(True) first if the app may be in background.
         """
         return await self._request("POST", "/api/panel", json={"id": panel_id})
 
@@ -107,12 +109,22 @@ class RustyClient:
 
         `path` is the url_path of a dashboard on the device's chip bar.
         Returns the resulting full state as a dict.
-        Raises RustyApiError (status 400) when the path is not on the chip bar,
+        Raises RustyApiError (status 409) when the app is not in the foreground,
+        or (status 400) when the path is not on the chip bar,
         or (status 404) when the Home Assistant feature is switched off.
         """
         return await self._request(
             "POST", "/api/home_assistant/dashboard", json={"path": path}
         )
+
+    async def async_set_foreground(self, on: bool) -> dict[str, Any]:
+        """Bring the Rusty app to the foreground (or send it to background).
+
+        POST /api/foreground {"on": true/false}.
+        Returns the resulting full state as a dict.
+        Raises RustyApiError on failure.
+        """
+        return await self._request("POST", "/api/foreground", json={"on": on})
 
     async def async_announce(self, text: str) -> None:
         """Speak [text] on the device via POST /api/announce/text.

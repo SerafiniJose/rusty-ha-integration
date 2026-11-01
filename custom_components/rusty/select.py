@@ -11,6 +11,8 @@ that omits panel data gracefully produces no entity at all.
 """
 from __future__ import annotations
 
+import asyncio
+
 from homeassistant.components.select import SelectEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -117,8 +119,12 @@ class RustyPanelSelect(RustyEntity, SelectEntity):
         return _PANEL_LABELS.get(active, active)
 
     async def async_select_option(self, option: str) -> None:
-        """Navigate the device to the selected panel."""
-        # Reverse the label→wire mapping built in options.
+        """Navigate the device to the selected panel.
+
+        Brings the Rusty app to the foreground first (POST /api/foreground);
+        the device rejects panel navigation with 409 when the app is not on screen.
+        The app stays in the foreground after navigation so the selected panel is visible.
+        """
         wire: str | None = next(
             (w for w in self._available_panels() if _PANEL_LABELS.get(w, w) == option),
             None,
@@ -126,6 +132,9 @@ class RustyPanelSelect(RustyEntity, SelectEntity):
         if wire is None:
             raise HomeAssistantError(f"Unknown panel option: {option!r}")
         try:
+            await self.coordinator.client.async_set_foreground(True)
+            # shortcut: 300ms for app to become interactive after foreground, when to upgrade: if device firmware adds a readiness signal
+            await asyncio.sleep(0.3)
             result = await self.coordinator.client.async_set_panel(wire)
         except RustyApiError as err:
             raise HomeAssistantError(f"Error communicating with Rusty: {err}") from err
@@ -175,14 +184,22 @@ class RustyDashboardSelect(RustyEntity, SelectEntity):
         return next((label for label, path in self._labels() if path == active_path), None)
 
     async def async_select_option(self, option: str) -> None:
-        """Navigate the device to the chosen HA dashboard."""
-        # Map the displayed label back to the url_path the API expects.
+        """Navigate the device to the chosen HA dashboard.
+
+        Brings the Rusty app to the foreground first (navigating to HA panel if needed).
+        The device rejects dashboard navigation with 409 when the app is not on screen.
+        """
         path: str | None = next(
             (path for label, path in self._labels() if label == option), None
         )
         if path is None:
             raise HomeAssistantError(f"Unknown HA dashboard option: {option!r}")
         try:
+            # Ensure app is foreground and on the HA panel before setting the dashboard.
+            await self.coordinator.client.async_set_foreground(True)
+            # shortcut: 300ms for app to become interactive after foreground, when to upgrade: if device firmware adds a readiness signal
+            await asyncio.sleep(0.3)
+            await self.coordinator.client.async_set_panel("home_assistant")
             result = await self.coordinator.client.async_set_dashboard(path)
         except RustyApiError as err:
             raise HomeAssistantError(f"Error communicating with Rusty: {err}") from err

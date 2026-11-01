@@ -409,3 +409,30 @@ async def test_announce_raises_on_503(mock_aioresponse):
             await client.async_announce("hello")
 
     assert excinfo.value.status == 503
+
+
+async def test_set_foreground_posts_on_true(mock_aioresponse):
+    """async_set_foreground(True) posts {"on": true} to /api/foreground."""
+    mock_aioresponse.post(f"{BASE_URL}/api/foreground", payload=STATE_BODY, status=200)
+
+    async with aiohttp.ClientSession() as session:
+        client = RustyClient(HOST, session)
+        result = await client.async_set_foreground(True)
+
+    assert result == STATE_BODY
+    key = ("POST", f"{BASE_URL}/api/foreground")
+    req = mock_aioresponse.requests[key][-1]
+    assert req.kwargs["json"] == {"on": True}
+
+
+async def test_set_foreground_posts_on_false(mock_aioresponse):
+    """async_set_foreground(False) posts {"on": false} to /api/foreground."""
+    mock_aioresponse.post(f"{BASE_URL}/api/foreground", payload=STATE_BODY, status=200)
+
+    async with aiohttp.ClientSession() as session:
+        client = RustyClient(HOST, session)
+        await client.async_set_foreground(False)
+
+    key = ("POST", f"{BASE_URL}/api/foreground")
+    req = mock_aioresponse.requests[key][-1]
+    assert req.kwargs["json"] == {"on": False}
